@@ -21,7 +21,7 @@ staticcheck ./...   # go install honnef.co/go/tools/cmd/staticcheck@latest
 Make one pull request per change. The release notes are generated from merged pull requests, so:
 
 - Write the title as a line of the release notes, e.g. "Delete worktrees with -d / -D"
-- Label it `enhancement` (What's New) or `bug` (Bug Fixes); anything else goes under What's Changed
+- Label it `enhancement` (What's New) or `bug` (Bug Fixes); anything else goes under Other Changes
 
 ## Releasing
 
