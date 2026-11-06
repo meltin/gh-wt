@@ -558,6 +558,9 @@ func expandBaseDir(cfg, mainRoot, home string) string {
 // existing local or remote branch or creating a new one from HEAD, then copies
 // files and runs wt.hook. All output except the final path goes to stderr.
 func createWorktree(name, path, base string, startPoint []string) {
+	if err := checkDestination(path); err != nil {
+		fail(err.Error())
+	}
 	src := currentRoot()
 	args := []string{"worktree", "add", "-b", name, path}
 	switch {
@@ -599,6 +602,18 @@ func createWorktree(name, path, base string, startPoint []string) {
 		}
 	}
 	fmt.Println(path)
+}
+
+// checkDestination refuses a path git worktree add would reject only after
+// creating the branch: anything there except an empty directory.
+func checkDestination(path string) error {
+	if !exists(path) {
+		return nil
+	}
+	if entries, err := os.ReadDir(path); err != nil || len(entries) > 0 {
+		return fmt.Errorf("%s already exists", tilde(path))
+	}
+	return nil
 }
 
 func branchExists(name string) bool {
