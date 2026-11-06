@@ -430,6 +430,9 @@ func undoBranchRename(mainRoot, oldName, newName string, renamed bool, overwritt
 		return fmt.Errorf("failed to move worktree %q", oldName)
 	}
 	if _, err := git("-C", mainRoot, "branch", "-m", "--", newName, oldName); err != nil {
+		if overwritten != "" {
+			return fmt.Errorf("failed to move worktree; the branch is now %q and could not be renamed back to %q (the overwritten %q was at %s)", newName, oldName, newName, overwritten)
+		}
 		return fmt.Errorf("failed to move worktree; the branch is now %q and could not be renamed back to %q", newName, oldName)
 	}
 	if overwritten != "" {

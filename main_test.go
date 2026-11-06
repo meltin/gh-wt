@@ -387,7 +387,7 @@ func TestRenameWorktreeFailedMove(t *testing.T) {
 	t.Chdir(repo)
 	roTip, _ := git("rev-parse", "ro/z")
 
-	// -m on a locked worktree: git refuses the move after the branch was renamed.
+	// The branch is renamed, then creating .wt/notes/ fails on the regular file.
 	if _, err := renameWorktree([]string{"lk"}, "notes/x", false); err == nil {
 		t.Fatal("rename into a path under a regular file should fail")
 	}
