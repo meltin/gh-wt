@@ -497,3 +497,91 @@ func TestCheckDestination(t *testing.T) {
 		}
 	}
 }
+
+// TestCLIBranchAndOrphan runs the built binary for -b and --orphan, whose
+// create paths exit the process on errors.
+func TestCLIBranchAndOrphan(t *testing.T) {
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_AUTHOR_NAME", "t")
+	t.Setenv("GIT_AUTHOR_EMAIL", "t@t")
+	t.Setenv("GIT_COMMITTER_NAME", "t")
+	t.Setenv("GIT_COMMITTER_EMAIL", "t@t")
+	dir, _ := filepath.EvalSymlinks(t.TempDir())
+	bin := filepath.Join(dir, "gh-wt")
+	if out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
+		t.Fatalf("build: %v\n%s", err, out)
+	}
+	repo := filepath.Join(dir, "repo")
+	gitIn := func(args ...string) string {
+		t.Helper()
+		out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	wt := func(args ...string) (string, error) {
+		cmd := exec.Command(bin, args...)
+		cmd.Dir = repo
+		out, err := cmd.Output()
+		return strings.TrimSpace(string(out)), err
+	}
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitIn("init", "-q", "-b", "main")
+	if err := os.WriteFile(filepath.Join(repo, ".gitignore"), []byte(".env\n.wt/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, ".env"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn("add", ".gitignore")
+	gitIn("commit", "-q", "-m", "init")
+	gitIn("config", "wt.copyignored", "true")
+	gitIn("config", "wt.hook", "touch hooked")
+
+	// -b: directory and branch differ; both names find it afterwards.
+	short := filepath.Join(repo, ".wt/short")
+	if p, err := wt("-b", "user/long-name", "short"); err != nil || p != short {
+		t.Fatalf("-b create: %q, %v", p, err)
+	}
+	if b := gitIn("-C", short, "branch", "--show-current"); b != "user/long-name" {
+		t.Fatalf("branch = %q", b)
+	}
+	for _, name := range []string{"user/long-name", "short"} {
+		if p, err := wt(name); err != nil || p != short {
+			t.Errorf("switch by %q: %q, %v", name, p, err)
+		}
+	}
+
+	// --orphan (flag after the name): no history, nothing copied, hook still runs.
+	orphan := filepath.Join(repo, ".wt/pages")
+	if p, err := wt("pages", "--orphan"); err != nil || p != orphan {
+		t.Fatalf("--orphan create: %q, %v", p, err)
+	}
+	if _, err := exec.Command("git", "-C", orphan, "rev-parse", "-q", "--verify", "HEAD").Output(); err == nil {
+		t.Error("orphan worktree should have no commits")
+	}
+	if _, err := os.Stat(filepath.Join(orphan, ".env")); err == nil {
+		t.Error("orphan worktree should not get copied files")
+	}
+	if _, err := os.Stat(filepath.Join(orphan, "hooked")); err != nil {
+		t.Error("hook should run for an orphan worktree")
+	}
+
+	for _, args := range [][]string{
+		{"--orphan", "x", "main"},  // start point with --orphan
+		{"--orphan", "main"},       // existing branch
+		{"--orphan", "short"},      // existing worktree
+		{"short", "main"},          // start point for an existing worktree
+		{"-b"},                     // missing value
+		{"-d", "short", "-b", "x"}, // -b with delete
+		{"-m", "short", "--orphan"},
+		{"-x", "a"},
+	} {
+		if _, err := wt(args...); err == nil {
+			t.Errorf("gh wt %v should fail", args)
+		}
+	}
+}

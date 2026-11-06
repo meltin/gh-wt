@@ -60,12 +60,16 @@ Switch between git worktrees, creating them as needed.
 
 USAGE
   gh wt [<branch|worktree|path> [<start-point>]]
+  gh wt -b <branch> <worktree> [<start-point>]
+  gh wt --orphan [-b <branch>] <worktree>
   gh wt -d|-D <branch|worktree|path>...
   gh wt -m|-M [<branch|worktree|path>] <new-name>
   gh wt [flags]
 
 FLAGS
   -l, --list           List worktrees with status, PR and last commit
+  -b, --branch NAME    Create with a branch name different from the directory
+      --orphan         Create on a new branch with no history
   -d, --delete         Delete worktrees and their branches (safe)
   -D, --force-delete   Delete even with changes or an unmerged branch
   -m, --move           Rename a worktree's directory and branch
@@ -73,13 +77,14 @@ FLAGS
   -h, --help           Show help for command
 
 EXAMPLES
-  $ gh wt            # Select a worktree and print its path
-  $ gh wt feat/x     # Print the path of the worktree for feat/x,
-                     # creating the worktree (and branch) if needed
-  $ gh wt fix/y main # Create branch fix/y from main in a new worktree
-  $ gh wt -l         # List worktrees
-  $ gh wt -d feat/x  # Delete the worktree and branch feat/x
-  $ gh wt -m feat/y  # Rename the current worktree and branch to feat/y
+  $ gh wt                  # Select a worktree and print its path
+  $ gh wt feat/x           # Print the path of the worktree for feat/x,
+                           # creating the worktree (and branch) if needed
+  $ gh wt fix/y main       # Create branch fix/y from main in a new worktree
+  $ gh wt -b me/feat feat  # Directory feat, branch me/feat
+  $ gh wt -l               # List worktrees
+  $ gh wt -d feat/x        # Delete the worktree and branch feat/x
+  $ gh wt -m feat/y        # Rename the current worktree and branch to feat/y
 
 A name is always a target, so "gh wt list" creates a worktree named list.
 
@@ -106,6 +111,8 @@ When no worktree matches, `gh wt <name>` runs `git worktree add` under the base 
 A target can be a branch name, a worktree directory name relative to the base directory, or a path to an existing worktree.
 
 `gh wt <name> <start-point>` creates the new branch from `<start-point>` (a branch, tag or commit) instead of `HEAD`, e.g. `gh wt fix/y main` from inside another worktree. A start point that exists only on a remote is used as `<remote>/<start-point>` (with `checkout.defaultRemote` breaking ties between remotes), so the new branch keeps its own name. A start point is refused when the worktree or a local branch named `<name>` already exists.
+
+`gh wt -b <branch> <worktree>` names the directory `<worktree>` and the branch `<branch>`, e.g. `gh wt -b me/feat feat`; either name finds it afterwards. `gh wt --orphan <name>` creates a branch with no history (Git 2.42+) in an empty worktree: no files are copied, hooks still run, and it can't take a start point or an existing branch. Flags may come before or after the names, as in git-wt.
 
 ## Deleting worktrees
 
