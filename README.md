@@ -8,6 +8,7 @@ A GitHub CLI extension to switch between git worktrees and see their state at a 
 - `gh wt <branch|worktree|path>` moves you to that worktree, creating the worktree (and the branch) if needed
 - `gh wt -l` lists all worktrees
 - `gh wt -d <target>...` deletes worktrees and their branches
+- `gh wt -m [<target>] <new-name>` renames a worktree's directory and branch together
 
 It only needs `git` and `gh`. Icons use [Nerd Fonts](https://www.nerdfonts.com/), so set a Nerd Font in your terminal.
 
@@ -60,12 +61,15 @@ Switch between git worktrees, creating them as needed.
 USAGE
   gh wt [<branch|worktree|path>]
   gh wt -d|-D <branch|worktree|path>...
+  gh wt -m|-M [<branch|worktree|path>] <new-name>
   gh wt [flags]
 
 FLAGS
   -l, --list           List worktrees with status, PR and last commit
   -d, --delete         Delete worktrees and their branches (safe)
   -D, --force-delete   Delete even with changes or an unmerged branch
+  -m, --move           Rename a worktree's directory and branch
+  -M, --force-move     Rename over an existing branch, or a locked worktree
   -h, --help           Show help for command
 
 EXAMPLES
@@ -74,6 +78,7 @@ EXAMPLES
                      # creating the worktree (and branch) if needed
   $ gh wt -l         # List worktrees
   $ gh wt -d feat/x  # Delete the worktree and branch feat/x
+  $ gh wt -m feat/y  # Rename the current worktree and branch to feat/y
 
 A name is always a target, so "gh wt list" creates a worktree named list.
 
@@ -112,6 +117,17 @@ A target can be a branch name, a worktree directory name relative to the base di
 - Processing stops at the first target that fails
 
 `gh wt -D` removes worktrees with changes and deletes unmerged branches. When the current worktree is deleted, the shell function moves you to the main repository.
+
+## Renaming worktrees
+
+`gh wt -m <new-name>` renames the current worktree; `gh wt -m <target> <new-name>` renames another one. The directory moves to `<base directory>/<new-name>` and the branch is renamed to `<new-name>`, like git-wt:
+
+- The branch is renamed first, so git refuses invalid or conflicting names (an existing branch, `feat` when renaming to `feat/y`, a branch checked out elsewhere) before anything on disk changes. If the directory then fails to move, the branch is renamed back
+- An existing destination, or a destination inside another worktree, stops the rename
+- The main working tree, a detached worktree and the protected branches (see deleting) can't be renamed
+- Parent directories left empty under the base directory (e.g. `feat/` after renaming `feat/x`) are removed
+
+`gh wt -M` overwrites an existing branch of the new name and moves a locked worktree. When the current worktree is renamed, the shell function moves you to its new path.
 
 ### Configuration
 
