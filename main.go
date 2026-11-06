@@ -279,7 +279,7 @@ func deleteTargets(targets []string, force bool) (string, error) {
 				return cdMain, fmt.Errorf("no worktree or branch found for %q", name)
 			}
 			if slices.Contains(protected, name) {
-				return cdMain, fmt.Errorf("cannot delete default branch %q", name)
+				return cdMain, fmt.Errorf("cannot delete protected branch %q (default or main HEAD)", name)
 			}
 			if err := gitLoud("-C", mainRoot, "branch", branchFlag, name); err != nil {
 				return cdMain, fmt.Errorf("failed to delete branch %q", name)
@@ -299,7 +299,7 @@ func deleteTargets(targets []string, force bool) (string, error) {
 		case wt.branch == "" || branchErr != nil:
 			note("Deleted worktree %s", tilde(wt.path))
 		case slices.Contains(protected, wt.branch):
-			note("Deleted worktree %q (branch is default, not deleted)", wt.branch)
+			note("Deleted worktree %q (branch is protected, not deleted)", wt.branch)
 		case gitLoud("-C", mainRoot, "branch", branchFlag, wt.branch) != nil:
 			note("Deleted worktree, but kept unmerged branch %q (use -D to force)", wt.branch)
 		default:

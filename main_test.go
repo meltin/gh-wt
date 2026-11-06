@@ -189,12 +189,29 @@ func TestDeleteTargetsEdgeCases(t *testing.T) {
 	if _, err := deleteTargets([]string{"gone"}, false); err != nil {
 		t.Fatalf("vanished worktree: %v", err)
 	}
-	// trunk is the main HEAD branch; protected even though the default is master.
-	if _, err := deleteTargets([]string{"trunk"}, true); err == nil {
-		t.Fatal("deleting the main HEAD branch should fail")
-	}
 	branches, _ := git("-C", repo, "branch", "--format=%(refname:short)")
 	if branches != "b\ntrunk" {
 		t.Fatalf("branches = %q, want b and trunk", branches)
+	}
+
+	// Bare repository whose HEAD is trunk while the default falls back to master:
+	// trunk's worktree can go, but the branch must stay or HEAD would dangle.
+	bare := filepath.Join(dir, "bare.git")
+	if out, err := exec.Command("git", "clone", "-q", "--bare", repo, bare).CombinedOutput(); err != nil {
+		t.Fatalf("clone --bare: %v\n%s", err, out)
+	}
+	repo = bare
+	run("worktree", "add", "-q", "-b", "feat", filepath.Join(bare, "wt/feat"))
+	run("worktree", "add", "-q", filepath.Join(bare, "wt/trunk"), "trunk")
+	t.Chdir(filepath.Join(bare, "wt/feat"))
+	if _, err := deleteTargets([]string{"trunk"}, true); err != nil {
+		t.Fatalf("removing the HEAD branch's worktree: %v", err)
+	}
+	_, err := deleteTargets([]string{"trunk"}, true)
+	if err == nil || !strings.Contains(err.Error(), "protected") {
+		t.Fatalf("deleting the bare HEAD branch: err = %v, want protected", err)
+	}
+	if _, err := git("-C", bare, "rev-parse", "--verify", "-q", "HEAD"); err != nil {
+		t.Fatal("bare HEAD dangles")
 	}
 }
