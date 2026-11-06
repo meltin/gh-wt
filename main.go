@@ -211,9 +211,9 @@ func switchTo(name string, startPoint []string) {
 }
 
 // qualifyStartPoint keeps a start point that resolves to a commit, and turns a
-// branch that exists only on a remote into "<remote>/<name>". Otherwise git
-// would check out that remote branch under its own name and silently ignore
-// -b (git-wt does the same). Unresolvable names pass through for git to report.
+// branch that exists only on a remote into "<remote>/<name>", which git would
+// otherwise reject or (older versions) check out under its own name, dropping
+// -b (as in git-wt). Unresolvable names pass through for git to report.
 func qualifyStartPoint(sp string) (string, error) {
 	if _, err := git("rev-parse", "--verify", "--quiet", sp+"^{commit}"); err == nil {
 		return sp, nil
@@ -229,7 +229,7 @@ func qualifyStartPoint(sp string) (string, error) {
 	if def, _ := git("config", "--get", "checkout.defaultRemote"); slices.Contains(remotes, def+"/"+sp) {
 		return def + "/" + sp, nil
 	}
-	return "", fmt.Errorf("start point %q matches several remotes (%s): qualify it, e.g. %s", sp, strings.Join(remotes, ", "), remotes[0])
+	return "", fmt.Errorf("start point %q matches several remotes (%s): qualify it (e.g. %s) or set checkout.defaultRemote", sp, strings.Join(remotes, ", "), remotes[0])
 }
 
 // repoBase returns the main repository root and the expanded wt.basedir.
