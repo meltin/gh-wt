@@ -217,7 +217,12 @@ func repoBase() (mainRoot, base string) {
 	}
 	baseCfg, _ := git("config", "--get", "wt.basedir")
 	home, _ := os.UserHomeDir()
-	return mainRoot, expandBaseDir(baseCfg, mainRoot, home)
+	base = expandBaseDir(baseCfg, mainRoot, home)
+	// git records worktree paths with symlinks resolved; compare against the same.
+	if real, err := filepath.EvalSymlinks(base); err == nil {
+		base = real
+	}
+	return mainRoot, base
 }
 
 // findWorktree matches name as a branch, then a directory under base, then a
@@ -326,12 +331,13 @@ func deleteTargets(targets []string, force bool) (string, error) {
 func renameWorktree(old []string, newName string, force bool) (string, error) {
 	mainRoot, base := repoBase()
 	current := currentRoot()
+	wts := liveWorktrees()
 	var src worktree
 	var ok bool
 	if len(old) == 0 {
-		src, ok = findWorktree(liveWorktrees(), base, current)
+		src, ok = findWorktree(wts, base, current)
 	} else {
-		src, ok = findWorktree(liveWorktrees(), base, old[0])
+		src, ok = findWorktree(wts, base, old[0])
 	}
 	switch {
 	case !ok && len(old) == 0:
@@ -354,47 +360,49 @@ func renameWorktree(old []string, newName string, force bool) (string, error) {
 	if !movesDir && !renamesBranch {
 		return "", fmt.Errorf("worktree %q is already named %q", src.branch, newName)
 	}
-	// Check everything before touching anything, so a failure can't leave the
-	// directory moved but the branch unrenamed.
-	if renamesBranch {
-		if _, err := git("check-ref-format", "refs/heads/"+newName); err != nil {
-			return "", fmt.Errorf("invalid branch name %q", newName)
-		}
-		if _, err := git("show-ref", "--verify", "--quiet", "refs/heads/"+newName); err == nil && !force {
-			return "", fmt.Errorf("branch %q already exists (use -M to force)", newName)
-		}
-	}
-	if _, err := os.Lstat(newPath); movesDir && err == nil {
-		return "", fmt.Errorf("%s already exists", tilde(newPath))
-	}
-
-	isCurrent := samePath(src.path, current)
 	if movesDir {
-		args := []string{"-C", mainRoot, "worktree", "move"}
-		if force {
-			args = append(args, "--force", "--force") // twice to move a locked worktree
+		if _, err := os.Lstat(newPath); err == nil {
+			return "", fmt.Errorf("%s already exists", tilde(newPath))
 		}
-		if err := os.MkdirAll(filepath.Dir(newPath), 0o755); err != nil {
-			return "", err
-		}
-		if err := gitLoud(append(args, src.path, newPath)...); err != nil {
-			return "", fmt.Errorf("failed to move worktree %q", src.branch)
-		}
-		// Remove parents left empty under base, e.g. "feat/" after renaming feat/x.
-		for dir := filepath.Dir(src.path); within(dir, base) && !samePath(dir, base); dir = filepath.Dir(dir) {
-			if os.Remove(dir) != nil {
+		// Never move a worktree into another one (or into itself): deleting the
+		// outer worktree later would delete it too.
+		for dir := filepath.Dir(newPath); within(dir, base); dir = filepath.Dir(dir) {
+			if slices.ContainsFunc(wts, func(wt worktree) bool { return samePath(wt.path, dir) }) {
+				return "", fmt.Errorf("%s would be inside the worktree %s", tilde(newPath), tilde(dir))
+			}
+			if samePath(dir, base) {
 				break
 			}
 		}
 	}
+
+	// Rename the branch first: git checks every ref conflict (existing,
+	// ancestor or checked-out branches) before anything on disk changes.
+	isCurrent := samePath(src.path, current)
+	_, existed := git("show-ref", "--verify", "--quiet", "refs/heads/"+newName)
 	if renamesBranch {
 		flag := "-m"
 		if force {
 			flag = "-M"
 		}
-		if err := gitLoud("-C", newPath, "branch", flag, "--", src.branch, newName); err != nil {
-			return "", fmt.Errorf("moved the worktree, but failed to rename branch %q", src.branch)
+		if err := gitLoud("-C", mainRoot, "branch", flag, "--", src.branch, newName); err != nil {
+			return "", fmt.Errorf("failed to rename branch %q", src.branch)
 		}
+	}
+	if movesDir {
+		args := []string{"-C", mainRoot, "worktree", "move"}
+		if force {
+			args = append(args, "--force", "--force") // twice to move a locked worktree
+		}
+		err := os.MkdirAll(filepath.Dir(newPath), 0o755)
+		if err == nil {
+			err = gitLoud(append(args, src.path, newPath)...)
+		}
+		if err != nil {
+			removeEmptyParents(filepath.Dir(newPath), base)
+			return "", undoBranchRename(mainRoot, src.branch, newName, renamesBranch, renamesBranch && existed == nil)
+		}
+		removeEmptyParents(filepath.Dir(src.path), base) // e.g. "feat/" after renaming feat/x
 	}
 	switch {
 	case !renamesBranch:
@@ -408,6 +416,31 @@ func renameWorktree(old []string, newName string, force bool) (string, error) {
 		return newPath, nil
 	}
 	return "", nil
+}
+
+// undoBranchRename restores the branch name after the worktree failed to move
+// and builds the error describing the state left behind.
+func undoBranchRename(mainRoot, oldName, newName string, renamed, overwrote bool) error {
+	if !renamed {
+		return fmt.Errorf("failed to move worktree %q", oldName)
+	}
+	if _, err := git("-C", mainRoot, "branch", "-m", "--", newName, oldName); err != nil {
+		return fmt.Errorf("failed to move worktree; the branch is now %q and could not be renamed back to %q", newName, oldName)
+	}
+	if overwrote {
+		return fmt.Errorf("failed to move worktree; renamed the branch back to %q, but the overwritten branch %q is not restored", oldName, newName)
+	}
+	return fmt.Errorf("failed to move worktree; renamed the branch back to %q", oldName)
+}
+
+// removeEmptyParents removes dir and its parents while they are empty and
+// strictly inside base.
+func removeEmptyParents(dir, base string) {
+	for ; within(dir, base) && !samePath(dir, base); dir = filepath.Dir(dir) {
+		if os.Remove(dir) != nil {
+			return
+		}
+	}
 }
 
 // protectedBranches are never deleted or renamed: the default branch and the

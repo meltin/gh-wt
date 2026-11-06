@@ -122,7 +122,8 @@ A target can be a branch name, a worktree directory name relative to the base di
 
 `gh wt -m <new-name>` renames the current worktree; `gh wt -m <target> <new-name>` renames another one. The directory moves to `<base directory>/<new-name>` and the branch is renamed to `<new-name>`, like git-wt:
 
-- Everything is checked before anything moves: an invalid branch name, an existing branch, or an existing directory stops the rename
+- The branch is renamed first, so git refuses invalid or conflicting names (an existing branch, `feat` when renaming to `feat/y`, a branch checked out elsewhere) before anything on disk changes. If the directory then fails to move, the branch is renamed back
+- An existing destination, or a destination inside another worktree, stops the rename
 - The main working tree, a detached worktree and the protected branches (see deleting) can't be renamed
 - Parent directories left empty under the base directory (e.g. `feat/` after renaming `feat/x`) are removed
 

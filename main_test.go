@@ -283,3 +283,69 @@ func TestRenameWorktree(t *testing.T) {
 		t.Fatal("a failed rename moved .wt/other")
 	}
 }
+
+// TestRenameWorktreeConflicts covers review findings: ref conflicts must fail
+// before anything moves, no worktree may nest in another, and a symlinked base
+// still gets its empty parents cleaned up.
+func TestRenameWorktreeConflicts(t *testing.T) {
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_AUTHOR_NAME", "t")
+	t.Setenv("GIT_AUTHOR_EMAIL", "t@t")
+	t.Setenv("GIT_COMMITTER_NAME", "t")
+	t.Setenv("GIT_COMMITTER_EMAIL", "t@t")
+	dir, _ := filepath.EvalSymlinks(t.TempDir())
+	repo := filepath.Join(dir, "repo")
+	run := func(args ...string) {
+		t.Helper()
+		if out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	exists := func(p string) bool { _, err := os.Stat(p); return err == nil }
+	if err := os.MkdirAll(filepath.Join(dir, "real"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(dir, "real"), filepath.Join(dir, "link")); err != nil {
+		t.Fatal(err)
+	}
+	real := filepath.Join(dir, "real")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	run("init", "-q", "-b", "main")
+	run("config", "wt.basedir", filepath.Join(dir, "link")) // symlinked base
+	run("commit", "-q", "--allow-empty", "-m", "init")
+	run("branch", "feat")
+	run("worktree", "add", "-q", "-b", "x", filepath.Join(real, "x"))
+	run("worktree", "add", "-q", "-b", "bar", filepath.Join(real, "foo"))
+	run("worktree", "add", "-q", "-b", "deep/a", filepath.Join(real, "deep/a"))
+	t.Chdir(repo)
+	branchOf := func(p string) string {
+		b, _ := git("-C", p, "branch", "--show-current")
+		return b
+	}
+
+	for _, c := range []struct{ old, new string }{
+		{"x", "feat/y"}, // ref "feat" exists: git refuses the branch rename
+		{"x", "main"},   // -M onto a branch checked out in the main worktree
+		{"x", "foo/z"},  // would nest inside worktree foo
+		{"x", "x/y/z"},  // would nest inside itself
+	} {
+		if _, err := renameWorktree([]string{c.old}, c.new, true); err == nil {
+			t.Errorf("rename %q to %q should fail", c.old, c.new)
+		}
+		if !exists(filepath.Join(real, "x")) || branchOf(filepath.Join(real, "x")) != "x" {
+			t.Fatalf("after failed rename to %q, x must be unchanged", c.new)
+		}
+	}
+	if exists(filepath.Join(real, "feat")) || exists(filepath.Join(real, "foo/z")) || exists(filepath.Join(real, "x/y")) {
+		t.Fatal("a failed rename left directories behind")
+	}
+
+	if _, err := renameWorktree([]string{"deep/a"}, "b", false); err != nil {
+		t.Fatalf("rename deep/a: %v", err)
+	}
+	if exists(filepath.Join(real, "deep")) || branchOf(filepath.Join(real, "b")) != "b" {
+		t.Fatal("want real/b on branch b and no empty real/deep under the symlinked base")
+	}
+}
