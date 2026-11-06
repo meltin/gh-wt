@@ -6,6 +6,6 @@ changelog:
     - title: Bug Fixes
       labels:
         - bug
-    - title: What's Changed
+    - title: Other Changes
       labels:
         - "*"
