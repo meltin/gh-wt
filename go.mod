@@ -1,4 +1,4 @@
-module github.com/unmett/gh-wt
+module github.com/meltin/gh-wt
 
 go 1.26.10
 
