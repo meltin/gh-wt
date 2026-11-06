@@ -29,10 +29,16 @@ An extension runs as a child process, so it cannot change your shell's directory
 
 ```zsh
 gh() {
-  if [[ $1 == wt && ( $# == 1 || ( $# == 2 && $2 != -* ) ) ]]; then
-    local dir rc
-    dir=$(command gh "$@"); rc=$?
-    [[ -d $dir ]] && cd -- "$dir"
+  if [[ $1 == wt && $2 != (-l|--list|-h|--help) ]]; then
+    local out rc last
+    out=$(command gh "$@"); rc=$?
+    last=${out##*$'\n'}
+    if [[ -d $last ]]; then
+      [[ $out == *$'\n'* ]] && print -r -- "${out%$'\n'*}"
+      cd -- "$last"
+    elif [[ -n $out ]]; then
+      print -r -- "$out"
+    fi
     return $rc
   else
     command gh "$@"
@@ -40,7 +46,7 @@ gh() {
 }
 ```
 
-Only `gh wt` and `gh wt <branch|worktree|path>` are intercepted. Every other `gh` command, including `gh wt -l`, runs as usual. If a hook fails after creating a worktree, you are still moved into it and the exit status is non-zero.
+Like git-wt's shell integration, every `gh wt` call is intercepted: when the last line of its output is a directory, the function moves there and prints the lines before it. The exit status is passed through, so if a hook fails after creating a worktree you are still moved into it and the status is non-zero. `gh wt -l` and `gh wt --help` run directly, keeping colors and the terminal width. Every other `gh` command runs as usual.
 
 ## Usage
 
