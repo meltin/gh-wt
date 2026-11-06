@@ -570,7 +570,19 @@ func TestCLIBranchAndOrphan(t *testing.T) {
 		t.Error("hook should run for an orphan worktree")
 	}
 
+	// -bNAME / --branch=NAME / -b=NAME, and -- before a name.
+	for i, args := range [][]string{{"-bme/a", "a"}, {"--branch=me/b", "b"}, {"-b=me/c", "--", "c"}} {
+		name := []string{"a", "b", "c"}[i]
+		if p, err := wt(args...); err != nil || p != filepath.Join(repo, ".wt", name) {
+			t.Errorf("gh wt %v: %q, %v", args, p, err)
+		}
+	}
+	if out, err := wt("short", "-h"); err != nil || !strings.Contains(out, "USAGE") {
+		t.Errorf("-h after a name should print help: %v", err)
+	}
+
 	for _, args := range [][]string{
+		{"-b", "-x", "dd"},         // -b value that looks like a flag
 		{"--orphan", "x", "main"},  // start point with --orphan
 		{"--orphan", "main"},       // existing branch
 		{"--orphan", "short"},      // existing worktree

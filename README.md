@@ -112,7 +112,7 @@ A target can be a branch name, a worktree directory name relative to the base di
 
 `gh wt <name> <start-point>` creates the new branch from `<start-point>` (a branch, tag or commit) instead of `HEAD`, e.g. `gh wt fix/y main` from inside another worktree. A start point that exists only on a remote is used as `<remote>/<start-point>` (with `checkout.defaultRemote` breaking ties between remotes), so the new branch keeps its own name. A start point is refused when the worktree or a local branch named `<name>` already exists.
 
-`gh wt -b <branch> <worktree>` names the directory `<worktree>` and the branch `<branch>`, e.g. `gh wt -b me/feat feat`; either name finds it afterwards. `gh wt --orphan <name>` creates a branch with no history (Git 2.42+) in an empty worktree: no files are copied, hooks still run, and it can't take a start point or an existing branch. Flags may come before or after the names, as in git-wt.
+`gh wt -b <branch> <worktree>` names the directory `<worktree>` and the branch `<branch>`, e.g. `gh wt -b me/feat feat`; either name finds it afterwards. `gh wt --orphan <name>` creates a branch with no history (Git 2.42+) in an empty worktree: no files are copied, hooks still run, and it can't take a start point or an existing branch. Flags may come before or after the names, as in git-wt; `-b` also takes `--branch=NAME` or `-bNAME`, and `--` ends the flags.
 
 ## Deleting worktrees
 
