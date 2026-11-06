@@ -243,7 +243,7 @@ func renderTable(rows []row, maxWidth int) (string, []string) {
 			ansi.Truncate(branchCell(r.wt), 28, "…"),
 			statusCell(r.status),
 			prCell(r.pr),
-			ansi.Truncate(r.subject, 50, "…"),
+			ansi.Truncate(r.subject, 64, "…"),
 			grayStyle.Render(r.when),
 			grayStyle.Render(tilde(r.wt.path)),
 		}
