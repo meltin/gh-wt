@@ -23,17 +23,21 @@ const helpText = `Switch between git worktrees, creating them as needed.
 
 USAGE
   gh wt [<branch|worktree|path>]
+  gh wt -d|-D <branch|worktree|path>...
   gh wt [flags]
 
 FLAGS
-  -l, --list   List worktrees with status, PR and last commit
-  -h, --help   Show help for command
+  -l, --list           List worktrees with status, PR and last commit
+  -d, --delete         Delete worktrees and their branches (safe)
+  -D, --force-delete   Delete even with changes or an unmerged branch
+  -h, --help           Show help for command
 
 EXAMPLES
-  $ gh wt          # Select a worktree and print its path
-  $ gh wt feat/x   # Print the path of the worktree for feat/x,
-                   # creating the worktree (and branch) if needed
-  $ gh wt -l       # List worktrees
+  $ gh wt            # Select a worktree and print its path
+  $ gh wt feat/x     # Print the path of the worktree for feat/x,
+                     # creating the worktree (and branch) if needed
+  $ gh wt -l         # List worktrees
+  $ gh wt -d feat/x  # Delete the worktree and branch feat/x
 
 A name is always a target, so "gh wt list" creates a worktree named list.
 
@@ -107,6 +111,17 @@ func main() {
 		fmt.Print(helpText)
 	case len(args) == 1 && (args[0] == "-l" || args[0] == "--list"):
 		listWorktrees()
+	case args[0] == "-d" || args[0] == "--delete" || args[0] == "-D" || args[0] == "--force-delete":
+		if len(args) < 2 {
+			fail("usage: gh wt -d <branch|worktree|path>...")
+		}
+		dir, err := deleteTargets(args[1:], args[0] == "-D" || args[0] == "--force-delete")
+		if dir != "" {
+			fmt.Println(dir) // the current worktree is gone; let the shell function cd out
+		}
+		if err != nil {
+			fail(err.Error())
+		}
 	case strings.HasPrefix(args[0], "-"):
 		fail(fmt.Sprintf("unknown flag: %s", args[0]))
 	case len(args) == 1:
@@ -161,29 +176,118 @@ func selectWorktree() {
 // directory under wt.basedir, or a path. Without a match it creates the
 // worktree (and the branch if needed) under wt.basedir, like git-wt.
 func switchTo(name string) {
-	wts := mustWorktrees()
+	_, base := repoBase()
+	if wt, ok := findWorktree(mustWorktrees(), base, name); ok {
+		fmt.Println(wt.path)
+		return
+	}
+	createWorktree(name, filepath.Join(base, name), base)
+}
+
+// repoBase returns the main repository root and the expanded wt.basedir.
+func repoBase() (mainRoot, base string) {
 	commonDir, err := git("rev-parse", "--path-format=absolute", "--git-common-dir")
 	if err != nil {
 		exitWithStatus(err)
 	}
 	// The main repository is the parent of the shared .git, even from a linked
 	// worktree; a bare repository is the common dir itself (as in git-wt).
-	mainRoot := commonDir
+	mainRoot = commonDir
 	if filepath.Base(commonDir) == ".git" {
 		mainRoot = filepath.Dir(commonDir)
 	}
 	baseCfg, _ := git("config", "--get", "wt.basedir")
 	home, _ := os.UserHomeDir()
-	base := expandBaseDir(baseCfg, mainRoot, home)
+	return mainRoot, expandBaseDir(baseCfg, mainRoot, home)
+}
 
+// findWorktree matches name as a branch, a directory under base, or a path.
+func findWorktree(wts []worktree, base, name string) (worktree, bool) {
 	abs, _ := filepath.Abs(name)
 	for _, wt := range wts {
 		if wt.branch == name || samePath(wt.path, filepath.Join(base, name)) || samePath(wt.path, abs) {
-			fmt.Println(wt.path)
-			return
+			return wt, true
 		}
 	}
-	createWorktree(name, filepath.Join(base, name), base)
+	return worktree{}, false
+}
+
+// deleteTargets removes each target's worktree and local branch like git-wt's
+// -d (safe) and -D (force), stopping at the first error. A dirty worktree is
+// refused by git worktree remove; an unmerged or default branch is kept with a
+// message. It returns the main repository root when the current worktree was
+// removed, so the shell function can move out of it.
+func deleteTargets(targets []string, force bool) (string, error) {
+	wts := mustWorktrees()
+	mainRoot, base := repoBase()
+	current := currentRoot()
+	def := defaultBranch()
+	removeArgs, branchFlag := []string{"-C", mainRoot, "worktree", "remove"}, "-d"
+	if force {
+		removeArgs, branchFlag = append(removeArgs, "--force"), "-D"
+	}
+	cdMain := ""
+	for _, name := range targets {
+		wt, ok := findWorktree(wts, base, name)
+		if !ok {
+			// Run from mainRoot: an earlier target may have removed the current directory.
+			if _, err := git("-C", mainRoot, "show-ref", "--verify", "--quiet", "refs/heads/"+name); err != nil {
+				return cdMain, fmt.Errorf("no worktree or branch found for %q", name)
+			}
+			if name == def {
+				return cdMain, fmt.Errorf("cannot delete default branch %q", name)
+			}
+			if _, err := git("-C", mainRoot, "branch", branchFlag, name); err != nil {
+				return cdMain, fmt.Errorf("failed to delete branch %q (use -D to force)", name)
+			}
+			note("Deleted branch %q (no worktree was associated)", name)
+			continue
+		}
+
+		isCurrent := samePath(wt.path, current) // before removal, while the path still resolves
+		if err := gitLoud(append(removeArgs, wt.path)...); err != nil {
+			return cdMain, fmt.Errorf("failed to remove worktree %q", name)
+		}
+		if isCurrent {
+			cdMain = mainRoot
+		}
+		_, branchErr := git("-C", mainRoot, "show-ref", "--verify", "--quiet", "refs/heads/"+wt.branch)
+		switch {
+		case wt.branch == "" || branchErr != nil:
+			note("Deleted worktree %s", tilde(wt.path))
+		case wt.branch == def:
+			note("Deleted worktree %q (branch is default, not deleted)", wt.branch)
+		default:
+			if _, err := git("-C", mainRoot, "branch", branchFlag, wt.branch); err != nil {
+				note("Deleted worktree, but kept unmerged branch %q (use -D to force)", wt.branch)
+			} else {
+				note("Deleted worktree and branch %q", wt.branch)
+			}
+		}
+	}
+	return cdMain, nil
+}
+
+// defaultBranch is origin/HEAD's branch, else init.defaultBranch, else master (as in git-wt).
+func defaultBranch() string {
+	if b, err := git("symbolic-ref", "--short", "refs/remotes/origin/HEAD"); err == nil {
+		return strings.TrimPrefix(b, "origin/")
+	}
+	if b, _ := git("config", "--get", "init.defaultBranch"); b != "" {
+		return b
+	}
+	return "master"
+}
+
+// gitLoud runs git with all output on stderr, keeping stdout for the path.
+func gitLoud(args ...string) error {
+	cmd := exec.Command("git", args...)
+	cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
+	return cmd.Run()
+}
+
+func note(format string, args ...any) {
+	fmt.Fprintf(os.Stderr, format+"\n", args...)
 }
 
 // expandBaseDir resolves git-wt's wt.basedir (default ".wt"): {gitroot} is the
@@ -214,9 +318,7 @@ func createWorktree(name, path, base string) {
 	if branchExists(name) {
 		args = []string{"worktree", "add", path, name} // git sets up tracking for a remote-only branch
 	}
-	cmd := exec.Command("git", args...)
-	cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
-	if err := cmd.Run(); err != nil {
+	if err := gitLoud(args...); err != nil {
 		exitWithStatus(err)
 	}
 

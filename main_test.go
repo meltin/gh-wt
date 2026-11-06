@@ -1,6 +1,9 @@
 package main
 
 import (
+	"os"
+	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -86,5 +89,54 @@ func TestExpandBaseDir(t *testing.T) {
 	}
 	if !within("/a/b/c", "/a/b") || within("/a/bc", "/a/b") || !within("/a/b", "/a/b") {
 		t.Error("within")
+	}
+}
+
+func TestDeleteTargets(t *testing.T) {
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_AUTHOR_NAME", "t")
+	t.Setenv("GIT_AUTHOR_EMAIL", "t@t")
+	t.Setenv("GIT_COMMITTER_NAME", "t")
+	t.Setenv("GIT_COMMITTER_EMAIL", "t@t")
+	dir, _ := filepath.EvalSymlinks(t.TempDir())
+	repo := filepath.Join(dir, "repo")
+	run := func(args ...string) {
+		t.Helper()
+		if out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	run("init", "-q", "-b", "main")
+	run("config", "init.defaultBranch", "main")
+	run("commit", "-q", "--allow-empty", "-m", "init")
+	run("worktree", "add", "-q", "-b", "merged", filepath.Join(repo, ".wt/merged"))
+	run("worktree", "add", "-q", "-b", "unmerged", filepath.Join(repo, ".wt/unmerged"))
+	run("-C", filepath.Join(repo, ".wt/unmerged"), "commit", "-q", "--allow-empty", "-m", "wip")
+	run("branch", "only-branch")
+	t.Chdir(filepath.Join(repo, ".wt/merged"))
+
+	cd, err := deleteTargets([]string{"merged", "unmerged", "only-branch"}, false)
+	if err != nil || cd != repo {
+		t.Fatalf("safe delete: cd=%q err=%v, want cd=%q", cd, err, repo)
+	}
+	t.Chdir(repo)
+	branches, _ := git("branch", "--format=%(refname:short)")
+	if branches != "main\nunmerged" {
+		t.Fatalf("after -d, branches = %q, want main and the unmerged branch kept", branches)
+	}
+	if len(mustWorktrees()) != 1 {
+		t.Fatalf("worktrees left: %v", mustWorktrees())
+	}
+	if _, err := deleteTargets([]string{"unmerged"}, true); err != nil {
+		t.Fatalf("-D unmerged branch: %v", err)
+	}
+	if _, err := deleteTargets([]string{"main"}, true); err == nil {
+		t.Fatal("deleting the default branch should fail")
+	}
+	if _, err := deleteTargets([]string{"nope"}, false); err == nil {
+		t.Fatal("unknown target should fail")
 	}
 }
