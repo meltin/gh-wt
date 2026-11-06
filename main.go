@@ -166,7 +166,12 @@ func switchTo(name string) {
 	if err != nil {
 		exitWithStatus(err)
 	}
-	mainRoot := filepath.Dir(commonDir) // parent of the shared .git, even from a linked worktree
+	// The main repository is the parent of the shared .git, even from a linked
+	// worktree; a bare repository is the common dir itself (as in git-wt).
+	mainRoot := commonDir
+	if filepath.Base(commonDir) == ".git" {
+		mainRoot = filepath.Dir(commonDir)
+	}
 	baseCfg, _ := git("config", "--get", "wt.basedir")
 	home, _ := os.UserHomeDir()
 	base := expandBaseDir(baseCfg, mainRoot, home)
@@ -258,7 +263,7 @@ func copyFiles(src, dst, base string) {
 	}
 	var entries []string
 	for _, l := range lists {
-		if on, _ := git("config", "--type=bool", "--get", l.key); on != "true" {
+		if on, _ := git("config", "--get", l.key); on != "true" { // literal "true", as git-wt reads it
 			continue
 		}
 		out, err := git(append([]string{"-C", src, "ls-files"}, l.args...)...)
