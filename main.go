@@ -23,12 +23,16 @@ const helpText = `Switch between git worktrees, creating them as needed.
 
 USAGE
   gh wt [<branch|worktree|path> [<start-point>]]
+  gh wt -b <branch> <worktree> [<start-point>]
+  gh wt --orphan [-b <branch>] <worktree>
   gh wt -d|-D <branch|worktree|path>...
   gh wt -m|-M [<branch|worktree|path>] <new-name>
   gh wt [flags]
 
 FLAGS
   -l, --list           List worktrees with status, PR and last commit
+  -b, --branch NAME    Create with a branch name different from the directory
+      --orphan         Create on a new branch with no history
   -d, --delete         Delete worktrees and their branches (safe)
   -D, --force-delete   Delete even with changes or an unmerged branch
   -m, --move           Rename a worktree's directory and branch
@@ -36,13 +40,14 @@ FLAGS
   -h, --help           Show help for command
 
 EXAMPLES
-  $ gh wt            # Select a worktree and print its path
-  $ gh wt feat/x     # Print the path of the worktree for feat/x,
-                     # creating the worktree (and branch) if needed
-  $ gh wt fix/y main # Create branch fix/y from main in a new worktree
-  $ gh wt -l         # List worktrees
-  $ gh wt -d feat/x  # Delete the worktree and branch feat/x
-  $ gh wt -m feat/y  # Rename the current worktree and branch to feat/y
+  $ gh wt                  # Select a worktree and print its path
+  $ gh wt feat/x           # Print the path of the worktree for feat/x,
+                           # creating the worktree (and branch) if needed
+  $ gh wt fix/y main       # Create branch fix/y from main in a new worktree
+  $ gh wt -b me/feat feat  # Directory feat, branch me/feat
+  $ gh wt -l               # List worktrees
+  $ gh wt -d feat/x        # Delete the worktree and branch feat/x
+  $ gh wt -m feat/y        # Rename the current worktree and branch to feat/y
 
 A name is always a target, so "gh wt list" creates a worktree named list.
 
@@ -113,7 +118,7 @@ func main() {
 	switch {
 	case len(args) == 0:
 		selectWorktree()
-	case args[0] == "-h" || args[0] == "--help":
+	case slices.Contains(args, "-h") || slices.Contains(args, "--help"):
 		fmt.Print(helpText)
 	case len(args) == 1 && (args[0] == "-l" || args[0] == "--list"):
 		listWorktrees()
@@ -121,6 +126,7 @@ func main() {
 		if len(args) < 2 {
 			fail("usage: gh wt -d <branch|worktree|path>...")
 		}
+		rejectFlags(args[1:], args[0])
 		dir, err := deleteTargets(args[1:], args[0] == "-D" || args[0] == "--force-delete")
 		if dir != "" {
 			fmt.Println(dir) // the current worktree is gone; let the shell function cd out
@@ -132,6 +138,7 @@ func main() {
 		if len(args) < 2 || len(args) > 3 {
 			fail("usage: gh wt -m [<branch|worktree|path>] <new-name>")
 		}
+		rejectFlags(args[1:], args[0])
 		dir, err := renameWorktree(args[1:len(args)-1], args[len(args)-1], args[0] == "-M" || args[0] == "--force-move")
 		if err != nil {
 			fail(err.Error())
@@ -139,13 +146,82 @@ func main() {
 		if dir != "" {
 			fmt.Println(dir) // the current worktree moved; let the shell function follow it
 		}
-	case strings.HasPrefix(args[0], "-"):
-		fail(fmt.Sprintf("unknown flag: %s", args[0]))
-	case len(args) <= 2:
-		switchTo(args[0], args[1:])
 	default:
-		fail("too many arguments: expected <branch|worktree|path> [<start-point>]")
+		createOrSwitch(args)
 	}
+}
+
+// rejectFlags fails on any flag after -d/-D/-m/-M; -b, --orphan and others
+// only apply to creating (branch names can't start with "-").
+func rejectFlags(args []string, mode string) {
+	if i := slices.IndexFunc(args, func(a string) bool { return strings.HasPrefix(a, "-") }); i >= 0 {
+		fail(fmt.Sprintf("cannot use %s with %s", args[i], mode))
+	}
+}
+
+// createOrSwitch parses [-b <branch>] [--orphan] <worktree> [<start-point>],
+// with the flags in any position like git-wt.
+func createOrSwitch(args []string) {
+	var pos []string
+	branch, orphan, flagsDone := "", false, false
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		value, inline := "", false // -bNAME, -b=NAME, --branch=NAME
+		for _, prefix := range []string{"--branch=", "-b="} {
+			if v, ok := strings.CutPrefix(a, prefix); ok && !flagsDone {
+				value, inline = v, true
+			}
+		}
+		if v, ok := strings.CutPrefix(a, "-b"); ok && v != "" && !inline && !flagsDone {
+			value, inline = v, true
+		}
+		switch {
+		case flagsDone || !strings.HasPrefix(a, "-"):
+			pos = append(pos, a)
+		case a == "--":
+			flagsDone = true
+		case inline || a == "-b" || a == "--branch":
+			if !inline && i+1 < len(args) {
+				i++
+				value = args[i]
+			}
+			if value == "" || strings.HasPrefix(value, "-") {
+				fail("-b needs a branch name")
+			}
+			branch = value
+		case a == "--orphan":
+			orphan = true
+		case a == "-l" || a == "--list":
+			fail(fmt.Sprintf("%s takes no other arguments", a))
+		case slices.Contains([]string{"-d", "--delete", "-D", "--force-delete", "-m", "--move", "-M", "--force-move"}, a):
+			fail(fmt.Sprintf("%s must come first and can't be combined with -b or --orphan", a))
+		default:
+			fail(fmt.Sprintf("unknown flag: %s", a))
+		}
+	}
+	switch {
+	case len(pos) == 0:
+		fail("usage: gh wt [-b <branch>] [--orphan] <branch|worktree|path> [<start-point>]")
+	case len(pos) > 2:
+		fail("too many arguments: expected <branch|worktree|path> [<start-point>]")
+	case pos[0] == "":
+		fail("empty target")
+	case len(pos) == 2 && pos[1] == "":
+		fail(`invalid start point ""`)
+	case len(pos) == 2 && orphan:
+		fail("cannot use a start point with --orphan")
+	}
+	if branch == "" {
+		branch = pos[0]
+	}
+	if strings.HasPrefix(branch, "-") { // only reachable after --; git can't name a branch so
+		fail(fmt.Sprintf("invalid branch name %q", branch))
+	}
+	startPoint := ""
+	if len(pos) == 2 {
+		startPoint = pos[1]
+	}
+	switchTo(pos[0], branch, startPoint, orphan)
 }
 
 func selectWorktree() {
@@ -192,22 +268,21 @@ func selectWorktree() {
 // switchTo prints the path of the worktree matching name as a branch, a
 // directory under wt.basedir, or a path. Without a match it creates the
 // worktree (and the branch if needed) under wt.basedir, like git-wt.
-func switchTo(name string, startPoint []string) {
-	if name == "" {
-		fail("empty target")
-	}
-	if len(startPoint) > 0 && (startPoint[0] == "" || strings.HasPrefix(startPoint[0], "-")) {
-		fail(fmt.Sprintf("invalid start point %q", startPoint[0]))
-	}
+func switchTo(dir, branch, startPoint string, orphan bool) {
 	_, base := repoBase()
-	if wt, ok := findWorktree(liveWorktrees(), base, name); ok {
-		if len(startPoint) > 0 {
-			fail(fmt.Sprintf("worktree for %q already exists at %s (a start point only applies to a new branch)", name, tilde(wt.path)))
+	wts := liveWorktrees()
+	wt, ok := findWorktree(wts, base, branch)
+	if !ok && dir != branch {
+		wt, ok = findWorktree(wts, base, dir)
+	}
+	if ok {
+		if startPoint != "" || orphan {
+			fail(fmt.Sprintf("worktree %s (%s) already exists (a start point or --orphan only applies to a new branch)", tilde(wt.path), label(wt)))
 		}
 		fmt.Println(wt.path)
 		return
 	}
-	createWorktree(name, filepath.Join(base, name), base, startPoint)
+	createWorktree(branch, filepath.Join(base, dir), base, startPoint, orphan)
 }
 
 // qualifyStartPoint keeps a start point that resolves to a commit, and turns a
@@ -557,22 +632,27 @@ func expandBaseDir(cfg, mainRoot, home string) string {
 // createWorktree adds a worktree for branch name at path, checking out an
 // existing local or remote branch or creating a new one from HEAD, then copies
 // files and runs wt.hook. All output except the final path goes to stderr.
-func createWorktree(name, path, base string, startPoint []string) {
+func createWorktree(name, path, base, startPoint string, orphan bool) {
 	if err := checkDestination(path); err != nil {
 		fail(err.Error())
 	}
 	src := currentRoot()
 	args := []string{"worktree", "add", "-b", name, path}
 	switch {
-	case len(startPoint) > 0:
+	case orphan:
+		if branchExists(name) {
+			fail(fmt.Sprintf("branch %q already exists (--orphan needs a new branch)", name))
+		}
+		args = []string{"worktree", "add", "--orphan", "-b", name, path}
+	case startPoint != "":
 		if _, err := git("show-ref", "--verify", "--quiet", "refs/heads/"+name); err == nil {
 			fail(fmt.Sprintf("branch %q already exists (a start point only applies to a new branch)", name))
 		}
-		sp, err := qualifyStartPoint(startPoint[0])
+		sp, err := qualifyStartPoint(startPoint)
 		if err != nil {
 			fail(err.Error())
 		}
-		if sp != startPoint[0] {
+		if sp != startPoint {
 			note("Using %s as the start point", sp)
 		}
 		args = append(args, sp)
@@ -583,7 +663,7 @@ func createWorktree(name, path, base string, startPoint []string) {
 		exitWithStatus(err)
 	}
 
-	if src != "" {
+	if src != "" && !orphan { // an orphan worktree starts empty, as in git-wt
 		copyFiles(src, path, base)
 	}
 
@@ -602,6 +682,13 @@ func createWorktree(name, path, base string, startPoint []string) {
 		}
 	}
 	fmt.Println(path)
+}
+
+func label(wt worktree) string {
+	if wt.branch == "" {
+		return "detached"
+	}
+	return "branch " + wt.branch
 }
 
 // checkDestination refuses a path git worktree add would reject only after
