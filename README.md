@@ -22,7 +22,7 @@ It only needs `git` and `gh`. Icons use [Nerd Fonts](https://www.nerdfonts.com/)
 ### Install as a GitHub CLI extension
 
 ```bash
-gh extension install unmett/gh-wt
+gh extension install meltin/gh-wt
 ```
 
 ### Shell integration (zsh)
