@@ -503,7 +503,7 @@ func leaveIfGone(cd, wd, mainRoot string) string {
 	return cd
 }
 
-// selectPR lists the repository's open PRs (forks excluded) and opens the
+// selectPR lists the open PRs whose branch is on origin and opens the
 // selected one's branch as a worktree.
 func selectPR() {
 	var prs []pullRequest
@@ -579,9 +579,9 @@ func renderPRTable(prs []pullRequest, wts []worktree, maxWidth int) (string, []s
 	})
 }
 
-// openPRs returns the open PRs whose branch lives in this repository.
+// openPRs returns the open PRs whose branch is on origin (see inOrigin).
 func openPRs() ([]pullRequest, string) {
-	cmd := exec.Command("gh", "pr", "list", "--limit", "100", "--json", "number,title,headRefName,headRefOid,isDraft,isCrossRepository,author,updatedAt")
+	cmd := exec.Command("gh", "pr", "list", "--limit", "100", "--json", "number,title,headRefName,headRefOid,headRepository,isDraft,isCrossRepository,author,updatedAt")
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
@@ -592,7 +592,8 @@ func openPRs() ([]pullRequest, string) {
 	if err := json.Unmarshal(out, &prs); err != nil {
 		return nil, err.Error()
 	}
-	return slices.DeleteFunc(prs, func(pr pullRequest) bool { return pr.IsCrossRepository }), ""
+	origin := originRepo()
+	return slices.DeleteFunc(prs, func(pr pullRequest) bool { return !inOrigin(pr, origin) }), ""
 }
 
 // openPR opens the PR given as a number, #number or URL.
@@ -601,7 +602,7 @@ func openPR(arg string) {
 	if err != nil {
 		fail(err.Error())
 	}
-	cmd := exec.Command("gh", "pr", "view", strconv.Itoa(n), "--json", "number,headRefName,isCrossRepository")
+	cmd := exec.Command("gh", "pr", "view", strconv.Itoa(n), "--json", "number,headRefName,headRepository,isCrossRepository")
 	cmd.Stderr = os.Stderr
 	out, err := cmd.Output()
 	if err != nil {
@@ -618,8 +619,8 @@ func openPR(arg string) {
 // it checks out the PR rather than creating a new branch, then switches to or
 // creates its worktree.
 func openPRBranch(pr pullRequest) {
-	if pr.IsCrossRepository {
-		fail(fmt.Sprintf("PR #%d is from a fork, which gh wt -p doesn't support yet", pr.Number))
+	if !inOrigin(pr, originRepo()) {
+		fail(fmt.Sprintf("PR #%d's branch is in another fork (%s), which gh wt -p doesn't support yet", pr.Number, pr.HeadRepository.NameWithOwner))
 	}
 	if err := gitLoud("fetch", "origin", pr.HeadRefName); err != nil {
 		fail(fmt.Sprintf("failed to fetch %q for PR #%d", pr.HeadRefName, pr.Number))
