@@ -136,8 +136,9 @@ func TestDeleteTargets(t *testing.T) {
 	// From an empty parent that gets removed, the shell is sent to the main repo.
 	run("worktree", "add", "-q", "-b", "nest2/y", filepath.Join(repo, ".wt/nest2/y"))
 	t.Chdir(filepath.Join(repo, ".wt/nest2"))
-	if cd, err := deleteTargets([]string{"nest2/y"}, false); err != nil || cd != repo {
-		t.Fatalf("delete from an emptied parent: cd=%q err=%v, want %q", cd, err, repo)
+	// A later target failing must not skip it.
+	if cd, err := deleteTargets([]string{"nest2/y", "nope"}, false); err == nil || cd != repo {
+		t.Fatalf("delete from an emptied parent: cd=%q err=%v, want %q and an error for nope", cd, err, repo)
 	}
 	t.Chdir(repo)
 	if len(mustWorktrees()) != 1 {

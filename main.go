@@ -249,7 +249,7 @@ func findWorktree(wts []worktree, base, name string) (worktree, bool) {
 // refused by git worktree remove; an unmerged or protected branch is kept with a
 // message. It returns the main repository root when the current worktree was
 // removed, so the shell function can move out of it.
-func deleteTargets(targets []string, force bool) (string, error) {
+func deleteTargets(targets []string, force bool) (cd string, err error) {
 	wts := mustWorktrees() // including prunable ones, so a vanished worktree can be cleaned up
 	mainRoot, base := repoBase()
 	current := currentRoot()
@@ -276,6 +276,8 @@ func deleteTargets(targets []string, force bool) (string, error) {
 	}
 
 	wd, _ := os.Getwd()
+	// On every return, including errors after earlier targets were removed.
+	defer func() { cd = leaveIfGone(cd, wd, mainRoot) }()
 	cdMain := ""
 	done := map[string]bool{}
 	for _, t := range resolved {
@@ -323,14 +325,14 @@ func deleteTargets(targets []string, force bool) (string, error) {
 			note("Deleted worktree %q", wt.branch)
 		}
 	}
-	return leaveIfGone(cdMain, wd, mainRoot), nil
+	return cdMain, nil
 }
 
 // leaveIfGone returns cd, or mainRoot when the shell's directory wd was removed
 // along the way (e.g. an emptied parent like .wt/feat), so it doesn't stay in a
 // deleted directory.
 func leaveIfGone(cd, wd, mainRoot string) string {
-	if cd == "" && wd != "" && !exists(wd) {
+	if _, err := os.Stat(wd); cd == "" && wd != "" && err != nil { // Stat: a symlinked cwd dangles
 		return mainRoot
 	}
 	return cd
