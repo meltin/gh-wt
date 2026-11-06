@@ -69,7 +69,7 @@ from the README to your .zshrc.
 
 | Column      | Content                                                                                   |
 | ----------- | ----------------------------------------------------------------------------------------- |
-| BRANCH      | Branch name, or the path for a detached worktree                                          |
+| BRANCH      | Branch name. A detached worktree shows its path in the picker and `(detached)` in `-l`    |
 | STATUS      | `↑` ahead / `↓` behind upstream, `!` conflicts, `+` staged, `~` modified, `?` untracked     |
 | PR          | Number and state (open / draft / merged / closed) of the newest PR for the branch          |
 | LAST COMMIT | Relative time and subject                                                                 |
