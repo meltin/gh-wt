@@ -421,3 +421,61 @@ func TestRenameWorktreeFailedMove(t *testing.T) {
 		t.Fatal("a failed rename removed the pre-existing directory .wt/ro")
 	}
 }
+
+func TestQualifyStartPoint(t *testing.T) {
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_AUTHOR_NAME", "t")
+	t.Setenv("GIT_AUTHOR_EMAIL", "t@t")
+	t.Setenv("GIT_COMMITTER_NAME", "t")
+	t.Setenv("GIT_COMMITTER_EMAIL", "t@t")
+	dir, _ := filepath.EvalSymlinks(t.TempDir())
+	repo := filepath.Join(dir, "repo")
+	run := func(args ...string) {
+		t.Helper()
+		if out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	for _, r := range []string{"origin.git", "up.git"} {
+		if out, err := exec.Command("git", "init", "-q", "--bare", filepath.Join(dir, r)).CombinedOutput(); err != nil {
+			t.Fatalf("%v\n%s", err, out)
+		}
+	}
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	run("init", "-q", "-b", "main")
+	run("commit", "-q", "--allow-empty", "-m", "init")
+	run("remote", "add", "origin", filepath.Join(dir, "origin.git"))
+	run("remote", "add", "up", filepath.Join(dir, "up.git"))
+	run("switch", "-q", "-c", "develop")
+	run("commit", "-q", "--allow-empty", "-m", "dev")
+	run("push", "-q", "origin", "develop")
+	run("switch", "-q", "-c", "solo")
+	run("push", "-q", "origin", "solo")
+	run("switch", "-q", "main")
+	run("branch", "-q", "-D", "develop", "solo")
+	run("fetch", "-q", "origin")
+	t.Chdir(repo)
+
+	for sp, want := range map[string]string{
+		"main":        "main",        // local branch
+		"origin/solo": "origin/solo", // already qualified
+		"solo":        "origin/solo", // remote-only: qualified so -b isn't dropped
+		"nope":        "nope",        // unknown: git reports it
+	} {
+		if got, err := qualifyStartPoint(sp); err != nil || got != want {
+			t.Errorf("qualifyStartPoint(%q) = %q, %v; want %q", sp, got, err, want)
+		}
+	}
+
+	run("push", "-q", "up", "origin/develop:refs/heads/develop")
+	run("fetch", "-q", "up")
+	if _, err := qualifyStartPoint("develop"); err == nil {
+		t.Error("develop on two remotes should be ambiguous")
+	}
+	run("config", "checkout.defaultRemote", "up")
+	if got, err := qualifyStartPoint("develop"); err != nil || got != "up/develop" {
+		t.Errorf("with checkout.defaultRemote=up: %q, %v", got, err)
+	}
+}

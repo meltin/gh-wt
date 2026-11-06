@@ -59,7 +59,7 @@ gh wt --help
 Switch between git worktrees, creating them as needed.
 
 USAGE
-  gh wt [<branch|worktree|path>]
+  gh wt [<branch|worktree|path> [<start-point>]]
   gh wt -d|-D <branch|worktree|path>...
   gh wt -m|-M [<branch|worktree|path>] <new-name>
   gh wt [flags]
@@ -76,6 +76,7 @@ EXAMPLES
   $ gh wt            # Select a worktree and print its path
   $ gh wt feat/x     # Print the path of the worktree for feat/x,
                      # creating the worktree (and branch) if needed
+  $ gh wt fix/y main # Create branch fix/y from main in a new worktree
   $ gh wt -l         # List worktrees
   $ gh wt -d feat/x  # Delete the worktree and branch feat/x
   $ gh wt -m feat/y  # Rename the current worktree and branch to feat/y
@@ -103,6 +104,8 @@ In the picker, the current worktree is shown grayed out under the header and can
 When no worktree matches, `gh wt <name>` runs `git worktree add` under the base directory: it checks out the local branch `<name>`, or a remote branch of that name with tracking, or creates a new branch from `HEAD`. A name is always a target, so `gh wt list` creates a worktree named `list`.
 
 A target can be a branch name, a worktree directory name relative to the base directory, or a path to an existing worktree.
+
+`gh wt <name> <start-point>` creates the new branch from `<start-point>` (a branch, tag or commit) instead of `HEAD`, e.g. `gh wt fix/y main` from inside another worktree. A start point that exists only on a remote is used as `<remote>/<start-point>` (with `checkout.defaultRemote` breaking ties between remotes), so the new branch keeps its own name. A start point is refused when the worktree or a local branch named `<name>` already exists.
 
 ## Deleting worktrees
 

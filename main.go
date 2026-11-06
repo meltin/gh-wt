@@ -22,7 +22,7 @@ import (
 const helpText = `Switch between git worktrees, creating them as needed.
 
 USAGE
-  gh wt [<branch|worktree|path>]
+  gh wt [<branch|worktree|path> [<start-point>]]
   gh wt -d|-D <branch|worktree|path>...
   gh wt -m|-M [<branch|worktree|path>] <new-name>
   gh wt [flags]
@@ -39,6 +39,7 @@ EXAMPLES
   $ gh wt            # Select a worktree and print its path
   $ gh wt feat/x     # Print the path of the worktree for feat/x,
                      # creating the worktree (and branch) if needed
+  $ gh wt fix/y main # Create branch fix/y from main in a new worktree
   $ gh wt -l         # List worktrees
   $ gh wt -d feat/x  # Delete the worktree and branch feat/x
   $ gh wt -m feat/y  # Rename the current worktree and branch to feat/y
@@ -140,10 +141,10 @@ func main() {
 		}
 	case strings.HasPrefix(args[0], "-"):
 		fail(fmt.Sprintf("unknown flag: %s", args[0]))
-	case len(args) == 1:
-		switchTo(args[0])
+	case len(args) <= 2:
+		switchTo(args[0], args[1:])
 	default:
-		fail("too many arguments")
+		fail("too many arguments: expected <branch|worktree|path> [<start-point>]")
 	}
 }
 
@@ -191,16 +192,44 @@ func selectWorktree() {
 // switchTo prints the path of the worktree matching name as a branch, a
 // directory under wt.basedir, or a path. Without a match it creates the
 // worktree (and the branch if needed) under wt.basedir, like git-wt.
-func switchTo(name string) {
+func switchTo(name string, startPoint []string) {
 	if name == "" {
 		fail("empty target")
 	}
+	if len(startPoint) > 0 && (startPoint[0] == "" || strings.HasPrefix(startPoint[0], "-")) {
+		fail(fmt.Sprintf("invalid start point %q", startPoint[0]))
+	}
 	_, base := repoBase()
 	if wt, ok := findWorktree(liveWorktrees(), base, name); ok {
+		if len(startPoint) > 0 {
+			fail(fmt.Sprintf("worktree for %q already exists at %s (a start point only applies to a new branch)", name, tilde(wt.path)))
+		}
 		fmt.Println(wt.path)
 		return
 	}
-	createWorktree(name, filepath.Join(base, name), base)
+	createWorktree(name, filepath.Join(base, name), base, startPoint)
+}
+
+// qualifyStartPoint keeps a start point that resolves to a commit, and turns a
+// branch that exists only on a remote into "<remote>/<name>", which git would
+// otherwise reject or (older versions) check out under its own name, dropping
+// -b (as in git-wt). Unresolvable names pass through for git to report.
+func qualifyStartPoint(sp string) (string, error) {
+	if _, err := git("rev-parse", "--verify", "--quiet", sp+"^{commit}"); err == nil {
+		return sp, nil
+	}
+	out, _ := git("for-each-ref", "--format=%(refname:short)", "refs/remotes/*/"+sp)
+	remotes := strings.Fields(out)
+	switch len(remotes) {
+	case 0:
+		return sp, nil
+	case 1:
+		return remotes[0], nil
+	}
+	if def, _ := git("config", "--get", "checkout.defaultRemote"); slices.Contains(remotes, def+"/"+sp) {
+		return def + "/" + sp, nil
+	}
+	return "", fmt.Errorf("start point %q matches several remotes (%s): qualify it (e.g. %s) or set checkout.defaultRemote", sp, strings.Join(remotes, ", "), remotes[0])
 }
 
 // repoBase returns the main repository root and the expanded wt.basedir.
@@ -528,10 +557,23 @@ func expandBaseDir(cfg, mainRoot, home string) string {
 // createWorktree adds a worktree for branch name at path, checking out an
 // existing local or remote branch or creating a new one from HEAD, then copies
 // files and runs wt.hook. All output except the final path goes to stderr.
-func createWorktree(name, path, base string) {
+func createWorktree(name, path, base string, startPoint []string) {
 	src := currentRoot()
 	args := []string{"worktree", "add", "-b", name, path}
-	if branchExists(name) {
+	switch {
+	case len(startPoint) > 0:
+		if _, err := git("show-ref", "--verify", "--quiet", "refs/heads/"+name); err == nil {
+			fail(fmt.Sprintf("branch %q already exists (a start point only applies to a new branch)", name))
+		}
+		sp, err := qualifyStartPoint(startPoint[0])
+		if err != nil {
+			fail(err.Error())
+		}
+		if sp != startPoint[0] {
+			note("Using %s as the start point", sp)
+		}
+		args = append(args, sp)
+	case branchExists(name):
 		args = []string{"worktree", "add", path, name} // git sets up tracking for a remote-only branch
 	}
 	if err := gitLoud(args...); err != nil {
