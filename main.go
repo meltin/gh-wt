@@ -191,7 +191,9 @@ func createOrSwitch(args []string) {
 			branch = value
 		case a == "--orphan":
 			orphan = true
-		case slices.Contains([]string{"-l", "--list", "-d", "--delete", "-D", "--force-delete", "-m", "--move", "-M", "--force-move"}, a):
+		case a == "-l" || a == "--list":
+			fail(fmt.Sprintf("%s takes no other arguments", a))
+		case slices.Contains([]string{"-d", "--delete", "-D", "--force-delete", "-m", "--move", "-M", "--force-move"}, a):
 			fail(fmt.Sprintf("%s must come first and can't be combined with -b or --orphan", a))
 		default:
 			fail(fmt.Sprintf("unknown flag: %s", a))
@@ -211,6 +213,9 @@ func createOrSwitch(args []string) {
 	}
 	if branch == "" {
 		branch = pos[0]
+	}
+	if strings.HasPrefix(branch, "-") { // only reachable after --; git can't name a branch so
+		fail(fmt.Sprintf("invalid branch name %q", branch))
 	}
 	startPoint := ""
 	if len(pos) == 2 {
@@ -679,8 +684,6 @@ func createWorktree(name, path, base, startPoint string, orphan bool) {
 	fmt.Println(path)
 }
 
-// checkDestination refuses a path git worktree add would reject only after
-// creating the branch: anything there except an empty directory.
 func label(wt worktree) string {
 	if wt.branch == "" {
 		return "detached"
@@ -688,6 +691,8 @@ func label(wt worktree) string {
 	return "branch " + wt.branch
 }
 
+// checkDestination refuses a path git worktree add would reject only after
+// creating the branch: anything there except an empty directory.
 func checkDestination(path string) error {
 	if !exists(path) {
 		return nil
