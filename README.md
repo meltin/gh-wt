@@ -105,8 +105,10 @@ A target can be a branch name, a worktree directory name relative to the base di
 
 - A worktree with modified or untracked files is not removed (ignored files such as `node_modules` don't count)
 - A branch that is not fully merged is kept, with a message; the exit status is still 0
-- The default branch (`origin/HEAD`, else `init.defaultBranch`, else `master`) is never deleted; its worktree can be
+- The default branch (`origin/HEAD`, else `init.defaultBranch`, else `master`) and the branch the main repository's `HEAD` points to are never deleted; their worktrees can be
 - A target with no worktree but a local branch deletes just the branch
+- A worktree whose directory was already removed is cleaned up as well
+- Targets are matched as a branch first, then a directory under the base directory, then a path
 - Processing stops at the first target that fails
 
 `gh wt -D` removes worktrees with changes and deletes unmerged branches. When the current worktree is deleted, the shell function moves you to the main repository.
