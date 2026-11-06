@@ -113,6 +113,7 @@ A target can be a branch name, a worktree directory name relative to the base di
 - The default branch (`origin/HEAD`, else `init.defaultBranch`, else `master`) and the branch the main repository's `HEAD` points to are never deleted; their worktrees can be
 - A target with no worktree but a local branch deletes just the branch
 - A worktree whose directory was already removed is cleaned up as well
+- Parent directories left empty under the base directory (e.g. `feat/` after deleting `feat/x`) are removed
 - Targets are matched as a branch first, then a directory under the base directory, then a path
 - Processing stops at the first target that fails
 
