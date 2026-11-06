@@ -71,3 +71,20 @@ func TestRenderTableFits(t *testing.T) {
 		}
 	}
 }
+
+func TestExpandBaseDir(t *testing.T) {
+	const root, home = "/src/repo", "/home/me"
+	for cfg, want := range map[string]string{
+		"":                          "/src/repo/.wt",
+		"../{gitroot}-wt":           "/src/repo-wt",
+		"~/dev/worktrees/{gitroot}": "/home/me/dev/worktrees/repo",
+		"/abs/{gitroot}/":           "/abs/repo",
+	} {
+		if got := expandBaseDir(cfg, root, home); got != want {
+			t.Errorf("expandBaseDir(%q) = %q, want %q", cfg, got, want)
+		}
+	}
+	if !within("/a/b/c", "/a/b") || within("/a/bc", "/a/b") || !within("/a/b", "/a/b") {
+		t.Error("within")
+	}
+}

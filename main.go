@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 
@@ -18,10 +19,10 @@ import (
 	"github.com/mattn/go-isatty"
 )
 
-const helpText = `Interactively switch between git worktrees.
+const helpText = `Switch between git worktrees, creating them as needed.
 
 USAGE
-  gh wt [worktree]
+  gh wt [<branch|worktree|path>]
   gh wt [flags]
 
 FLAGS
@@ -30,8 +31,11 @@ FLAGS
 
 EXAMPLES
   $ gh wt          # Select a worktree and print its path
-  $ gh wt feat/x   # Print the path of the worktree for branch feat/x
+  $ gh wt feat/x   # Print the path of the worktree for feat/x,
+                   # creating the worktree (and branch) if needed
   $ gh wt -l       # List worktrees
+
+A name is always a target, so "gh wt list" creates a worktree named list.
 
 gh wt only prints the path. To cd into it, add the shell function
 from the README to your .zshrc.
@@ -153,15 +157,152 @@ func selectWorktree() {
 	fmt.Println(selected)
 }
 
+// switchTo prints the path of the worktree matching name as a branch, a
+// directory under wt.basedir, or a path. Without a match it creates the
+// worktree (and the branch if needed) under wt.basedir, like git-wt.
 func switchTo(name string) {
+	wts := mustWorktrees()
+	commonDir, err := git("rev-parse", "--path-format=absolute", "--git-common-dir")
+	if err != nil {
+		exitWithStatus(err)
+	}
+	mainRoot := filepath.Dir(commonDir) // parent of the shared .git, even from a linked worktree
+	baseCfg, _ := git("config", "--get", "wt.basedir")
+	home, _ := os.UserHomeDir()
+	base := expandBaseDir(baseCfg, mainRoot, home)
+
 	abs, _ := filepath.Abs(name)
-	for _, wt := range mustWorktrees() {
-		if wt.branch == name || samePath(wt.path, abs) {
+	for _, wt := range wts {
+		if wt.branch == name || samePath(wt.path, filepath.Join(base, name)) || samePath(wt.path, abs) {
 			fmt.Println(wt.path)
 			return
 		}
 	}
-	fail(fmt.Sprintf("no worktree for %q", name))
+	createWorktree(name, filepath.Join(base, name), base)
+}
+
+// expandBaseDir resolves git-wt's wt.basedir (default ".wt"): {gitroot} is the
+// main repository's directory name, "~" is home, and a relative path is under
+// the main repository.
+func expandBaseDir(cfg, mainRoot, home string) string {
+	if cfg == "" {
+		cfg = ".wt"
+	}
+	cfg = strings.ReplaceAll(cfg, "{gitroot}", filepath.Base(mainRoot))
+	switch {
+	case cfg == "~":
+		return home
+	case strings.HasPrefix(cfg, "~/"):
+		return filepath.Join(home, cfg[2:])
+	case filepath.IsAbs(cfg):
+		return filepath.Clean(cfg)
+	}
+	return filepath.Join(mainRoot, cfg)
+}
+
+// createWorktree adds a worktree for branch name at path, checking out an
+// existing local or remote branch or creating a new one from HEAD, then copies
+// files and runs wt.hook. All output except the final path goes to stderr.
+func createWorktree(name, path, base string) {
+	src := currentRoot()
+	args := []string{"worktree", "add", "-b", name, path}
+	if branchExists(name) {
+		args = []string{"worktree", "add", path, name} // git sets up tracking for a remote-only branch
+	}
+	cmd := exec.Command("git", args...)
+	cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
+	if err := cmd.Run(); err != nil {
+		exitWithStatus(err)
+	}
+
+	if src != "" {
+		copyFiles(src, path, base)
+	}
+
+	hooks, _ := git("config", "--get-all", "wt.hook")
+	for _, hook := range strings.Split(hooks, "\n") {
+		if hook == "" {
+			continue
+		}
+		cmd := exec.Command("sh", "-c", hook)
+		cmd.Dir = path
+		cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
+		if err := cmd.Run(); err != nil {
+			// The worktree is usable, so still hand its path to the shell function.
+			fmt.Println(path)
+			fail(fmt.Sprintf("hook %q failed: %v", hook, err))
+		}
+	}
+	fmt.Println(path)
+}
+
+func branchExists(name string) bool {
+	if _, err := git("show-ref", "--verify", "--quiet", "refs/heads/"+name); err == nil {
+		return true
+	}
+	remote, _ := git("for-each-ref", "--format=%(refname)", "refs/remotes/*/"+name)
+	return remote != ""
+}
+
+// copyFiles copies what git-wt's wt.copyignored, wt.copyuntracked and
+// wt.copymodified select from the src worktree into dst. Directories are listed
+// as one entry and copied whole, cloned on APFS with cp -c.
+func copyFiles(src, dst, base string) {
+	lists := []struct {
+		key  string
+		args []string
+	}{
+		{"wt.copyignored", []string{"--others", "--ignored", "--exclude-standard", "--directory"}},
+		{"wt.copyuntracked", []string{"--others", "--exclude-standard", "--directory"}},
+		{"wt.copymodified", []string{"--modified"}},
+	}
+	var entries []string
+	for _, l := range lists {
+		if on, _ := git("config", "--type=bool", "--get", l.key); on != "true" {
+			continue
+		}
+		out, err := git(append([]string{"-C", src, "ls-files"}, l.args...)...)
+		if err == nil && out != "" {
+			entries = append(entries, strings.Split(out, "\n")...)
+		}
+	}
+	slices.Sort(entries)
+	entries = slices.Compact(entries)
+
+	cpFlags := "-RP"
+	if runtime.GOOS == "darwin" {
+		cpFlags = "-cRP"
+	}
+	// Skip the worktree base directory when it lives inside the repository,
+	// or every sibling worktree would be copied in.
+	skipBase := within(base, src)
+	copiedDir := ""
+	for _, e := range entries {
+		if copiedDir != "" && strings.HasPrefix(e, copiedDir) {
+			continue
+		}
+		from, to := filepath.Join(src, e), filepath.Join(dst, e)
+		if skipBase && within(from, base) {
+			continue
+		}
+		if strings.HasSuffix(e, "/") {
+			copiedDir = e
+			from += "/." // copy the contents, so an existing dst directory is merged into
+		}
+		err := os.MkdirAll(filepath.Dir(to), 0o755)
+		if err == nil {
+			err = exec.Command("cp", cpFlags, from, to).Run()
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, grayStyle.Render(fmt.Sprintf("warning: failed to copy %s: %v", e, err)))
+		}
+	}
+}
+
+// within reports whether path is dir or inside it.
+func within(path, dir string) bool {
+	rel, err := filepath.Rel(dir, path)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, "../")
 }
 
 func listWorktrees() {
