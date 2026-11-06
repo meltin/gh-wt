@@ -577,6 +577,27 @@ func TestCLIBranchAndOrphan(t *testing.T) {
 			t.Errorf("gh wt %v: %q, %v", args, p, err)
 		}
 	}
+	// --init zsh prints a function zsh accepts; other shells are refused.
+	// The function must load over an alias and run `gh wt` under nounset.
+	if out, err := wt("--init", "zsh"); err != nil || !strings.Contains(out, "command gh") {
+		t.Errorf("--init zsh: %v", err)
+	} else if zsh, err := exec.LookPath("zsh"); err == nil {
+		fake := filepath.Join(dir, "fakebin")
+		if err := os.MkdirAll(fake, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(fake, "gh"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		check := exec.Command(zsh, "-f", "-c", `alias gh="noglob gh"; eval "$INIT"; setopt nounset; gh wt && gh && print defined=$+functions[gh]`)
+		check.Env = append(os.Environ(), "INIT="+out, "PATH="+fake+":"+os.Getenv("PATH"))
+		if b, err := check.CombinedOutput(); err != nil || !strings.Contains(string(b), "defined=1") {
+			t.Errorf("loading --init output: %v\n%s", err, b)
+		}
+	}
+	if _, err := wt("--init", "fish"); err == nil {
+		t.Error("--init fish should fail")
+	}
 	if out, err := wt("short", "-h"); err != nil || !strings.Contains(out, "USAGE") {
 		t.Errorf("-h after a name should print help: %v", err)
 	}

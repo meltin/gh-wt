@@ -37,6 +37,7 @@ FLAGS
   -D, --force-delete   Delete even with changes or an unmerged branch
   -m, --move           Rename a worktree's directory and branch
   -M, --force-move     Rename over an existing branch, or a locked worktree
+      --init zsh       Print the shell function that cds into the worktree
   -h, --help           Show help for command
 
 EXAMPLES
@@ -51,8 +52,31 @@ EXAMPLES
 
 A name is always a target, so "gh wt list" creates a worktree named list.
 
-gh wt only prints the path. To cd into it, add the shell function
-from the README to your .zshrc.
+gh wt only prints the path. To cd into it, add this to your .zshrc:
+  eval "$(gh wt --init zsh)"
+`
+
+// zshInit is printed by `gh wt --init zsh`. gh wt only prints a path, so this
+// function wraps gh to cd into the last line of its output when it's a directory.
+// `function gh` (not `gh()`) still defines it when gh is an alias, and ${1-}
+// keeps it working under setopt nounset.
+const zshInit = `# gh-wt (https://github.com/meltin/gh-wt): cd into the worktree gh wt prints.
+function gh {
+  if [[ ${1-} == wt && ${2-} != (-l|--list|-h|--help|--init) ]]; then
+    local out rc last
+    out=$(command gh "$@"); rc=$?
+    last=${out##*$'\n'}
+    if [[ -d $last ]]; then
+      [[ $out == *$'\n'* ]] && print -r -- "${out%$'\n'*}"
+      cd -- "$last"
+    elif [[ -n $out ]]; then
+      print -r -- "$out"
+    fi
+    return $rc
+  else
+    command gh "$@"
+  fi
+}
 `
 
 // Nerd Font (Octicons) glyphs.
@@ -120,6 +144,14 @@ func main() {
 		selectWorktree()
 	case slices.Contains(args, "-h") || slices.Contains(args, "--help"):
 		fmt.Print(helpText)
+	case args[0] == "--init":
+		switch {
+		case len(args) != 2:
+			fail("usage: gh wt --init zsh")
+		case args[1] != "zsh":
+			fail(fmt.Sprintf("unsupported shell %q (zsh only)", args[1]))
+		}
+		fmt.Print(zshInit)
 	case len(args) == 1 && (args[0] == "-l" || args[0] == "--list"):
 		listWorktrees()
 	case args[0] == "-d" || args[0] == "--delete" || args[0] == "-D" || args[0] == "--force-delete":
