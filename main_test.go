@@ -215,3 +215,71 @@ func TestDeleteTargetsEdgeCases(t *testing.T) {
 		t.Fatal("bare HEAD dangles")
 	}
 }
+
+func TestRenameWorktree(t *testing.T) {
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_AUTHOR_NAME", "t")
+	t.Setenv("GIT_AUTHOR_EMAIL", "t@t")
+	t.Setenv("GIT_COMMITTER_NAME", "t")
+	t.Setenv("GIT_COMMITTER_EMAIL", "t@t")
+	dir, _ := filepath.EvalSymlinks(t.TempDir())
+	repo := filepath.Join(dir, "repo")
+	run := func(args ...string) {
+		t.Helper()
+		if out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	exists := func(rel string) bool {
+		_, err := os.Stat(filepath.Join(repo, rel))
+		return err == nil
+	}
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	run("init", "-q", "-b", "main")
+	run("commit", "-q", "--allow-empty", "-m", "init")
+	run("worktree", "add", "-q", "-b", "feat/x", filepath.Join(repo, ".wt/feat/x"))
+	run("worktree", "add", "-q", "-b", "other", filepath.Join(repo, ".wt/other"))
+	run("worktree", "add", "-q", "--detach", filepath.Join(repo, ".wt/det"))
+	t.Chdir(filepath.Join(repo, ".wt/feat/x"))
+
+	// Current worktree, one argument: directory and branch move, empty feat/ is removed.
+	got, err := renameWorktree(nil, "y", false)
+	if want := filepath.Join(repo, ".wt/y"); err != nil || got != want {
+		t.Fatalf("rename current: got %q, %v; want %q", got, err, want)
+	}
+	t.Chdir(repo)
+	if !exists(".wt/y") || exists(".wt/feat") {
+		t.Fatal("want .wt/y and no leftover .wt/feat")
+	}
+	if b, _ := git("-C", filepath.Join(repo, ".wt/y"), "branch", "--show-current"); b != "y" {
+		t.Fatalf("branch = %q, want y", b)
+	}
+
+	// Existing branch: -m refuses before moving anything, -M overwrites it.
+	if _, err := renameWorktree([]string{"y"}, "other", false); err == nil || !exists(".wt/y") {
+		t.Fatalf("-m onto an existing branch should fail and keep .wt/y: %v", err)
+	}
+	run("worktree", "remove", filepath.Join(repo, ".wt/other"))
+	if got, err := renameWorktree([]string{"y"}, "other", true); err != nil || got != "" {
+		t.Fatalf("-M onto an existing branch: %q, %v", got, err)
+	}
+
+	for _, c := range []struct {
+		old, new string
+	}{
+		{"other", "a..b"},  // invalid branch name: nothing moves
+		{"main", "trunk"},  // main working tree
+		{".wt/det", "z"},   // detached
+		{"other", "other"}, // unchanged
+		{"nope", "z"},      // unknown
+	} {
+		if _, err := renameWorktree([]string{c.old}, c.new, true); err == nil {
+			t.Errorf("rename %q to %q should fail", c.old, c.new)
+		}
+	}
+	if !exists(".wt/other") {
+		t.Fatal("a failed rename moved .wt/other")
+	}
+}

@@ -24,12 +24,15 @@ const helpText = `Switch between git worktrees, creating them as needed.
 USAGE
   gh wt [<branch|worktree|path>]
   gh wt -d|-D <branch|worktree|path>...
+  gh wt -m|-M [<branch|worktree|path>] <new-name>
   gh wt [flags]
 
 FLAGS
   -l, --list           List worktrees with status, PR and last commit
   -d, --delete         Delete worktrees and their branches (safe)
   -D, --force-delete   Delete even with changes or an unmerged branch
+  -m, --move           Rename a worktree's directory and branch
+  -M, --force-move     Rename over an existing branch, or a locked worktree
   -h, --help           Show help for command
 
 EXAMPLES
@@ -38,6 +41,7 @@ EXAMPLES
                      # creating the worktree (and branch) if needed
   $ gh wt -l         # List worktrees
   $ gh wt -d feat/x  # Delete the worktree and branch feat/x
+  $ gh wt -m feat/y  # Rename the current worktree and branch to feat/y
 
 A name is always a target, so "gh wt list" creates a worktree named list.
 
@@ -122,6 +126,17 @@ func main() {
 		}
 		if err != nil {
 			fail(err.Error())
+		}
+	case args[0] == "-m" || args[0] == "--move" || args[0] == "-M" || args[0] == "--force-move":
+		if len(args) < 2 || len(args) > 3 {
+			fail("usage: gh wt -m [<branch|worktree|path>] <new-name>")
+		}
+		dir, err := renameWorktree(args[1:len(args)-1], args[len(args)-1], args[0] == "-M" || args[0] == "--force-move")
+		if err != nil {
+			fail(err.Error())
+		}
+		if dir != "" {
+			fmt.Println(dir) // the current worktree moved; let the shell function follow it
 		}
 	case strings.HasPrefix(args[0], "-"):
 		fail(fmt.Sprintf("unknown flag: %s", args[0]))
@@ -233,12 +248,7 @@ func deleteTargets(targets []string, force bool) (string, error) {
 	wts := mustWorktrees() // including prunable ones, so a vanished worktree can be cleaned up
 	mainRoot, base := repoBase()
 	current := currentRoot()
-	// Keep the default branch, and the branch the main repository's HEAD points
-	// to: in a bare repository nothing else stops git from deleting it.
-	protected := []string{defaultBranch()}
-	if head, err := git("-C", mainRoot, "symbolic-ref", "--short", "HEAD"); err == nil {
-		protected = append(protected, head)
-	}
+	protected := protectedBranches(mainRoot)
 	removeArgs, branchFlag := []string{"-C", mainRoot, "worktree", "remove"}, "-d"
 	if force {
 		removeArgs, branchFlag = append(removeArgs, "--force"), "-D"
@@ -307,6 +317,108 @@ func deleteTargets(targets []string, force bool) (string, error) {
 		}
 	}
 	return cdMain, nil
+}
+
+// renameWorktree moves a linked worktree to <base>/<newName> and renames its
+// branch to newName, like git-wt's -m (safe) and -M (overwrite an existing
+// branch, move a locked worktree). old is empty for the current worktree.
+// It returns the new path when the current worktree was renamed.
+func renameWorktree(old []string, newName string, force bool) (string, error) {
+	mainRoot, base := repoBase()
+	current := currentRoot()
+	var src worktree
+	var ok bool
+	if len(old) == 0 {
+		src, ok = findWorktree(liveWorktrees(), base, current)
+	} else {
+		src, ok = findWorktree(liveWorktrees(), base, old[0])
+	}
+	switch {
+	case !ok && len(old) == 0:
+		return "", errors.New("not in a worktree; name the worktree to rename")
+	case !ok:
+		return "", fmt.Errorf("no worktree found for %q", old[0])
+	case newName == "":
+		return "", errors.New("empty new name")
+	case src.branch == "":
+		return "", fmt.Errorf("cannot rename %s: it has no branch (detached HEAD)", tilde(src.path))
+	case samePath(src.path, mainRoot):
+		return "", errors.New("cannot rename the main working tree")
+	case slices.Contains(protectedBranches(mainRoot), src.branch):
+		return "", fmt.Errorf("cannot rename protected branch %q (default or main HEAD)", src.branch)
+	}
+
+	newPath := filepath.Join(base, newName)
+	movesDir := !samePath(src.path, newPath)
+	renamesBranch := src.branch != newName
+	if !movesDir && !renamesBranch {
+		return "", fmt.Errorf("worktree %q is already named %q", src.branch, newName)
+	}
+	// Check everything before touching anything, so a failure can't leave the
+	// directory moved but the branch unrenamed.
+	if renamesBranch {
+		if _, err := git("check-ref-format", "refs/heads/"+newName); err != nil {
+			return "", fmt.Errorf("invalid branch name %q", newName)
+		}
+		if _, err := git("show-ref", "--verify", "--quiet", "refs/heads/"+newName); err == nil && !force {
+			return "", fmt.Errorf("branch %q already exists (use -M to force)", newName)
+		}
+	}
+	if _, err := os.Lstat(newPath); movesDir && err == nil {
+		return "", fmt.Errorf("%s already exists", tilde(newPath))
+	}
+
+	isCurrent := samePath(src.path, current)
+	if movesDir {
+		args := []string{"-C", mainRoot, "worktree", "move"}
+		if force {
+			args = append(args, "--force", "--force") // twice to move a locked worktree
+		}
+		if err := os.MkdirAll(filepath.Dir(newPath), 0o755); err != nil {
+			return "", err
+		}
+		if err := gitLoud(append(args, src.path, newPath)...); err != nil {
+			return "", fmt.Errorf("failed to move worktree %q", src.branch)
+		}
+		// Remove parents left empty under base, e.g. "feat/" after renaming feat/x.
+		for dir := filepath.Dir(src.path); within(dir, base) && !samePath(dir, base); dir = filepath.Dir(dir) {
+			if os.Remove(dir) != nil {
+				break
+			}
+		}
+	}
+	if renamesBranch {
+		flag := "-m"
+		if force {
+			flag = "-M"
+		}
+		if err := gitLoud("-C", newPath, "branch", flag, "--", src.branch, newName); err != nil {
+			return "", fmt.Errorf("moved the worktree, but failed to rename branch %q", src.branch)
+		}
+	}
+	switch {
+	case !renamesBranch:
+		note("Moved worktree %q to %s", src.branch, tilde(newPath))
+	case !movesDir:
+		note("Renamed branch %q to %q (worktree directory unchanged)", src.branch, newName)
+	default:
+		note("Renamed worktree %q to %q (%s)", src.branch, newName, tilde(newPath))
+	}
+	if isCurrent {
+		return newPath, nil
+	}
+	return "", nil
+}
+
+// protectedBranches are never deleted or renamed: the default branch and the
+// branch the main repository's HEAD points to (a bare repository's HEAD has
+// no worktree to keep git from deleting it).
+func protectedBranches(mainRoot string) []string {
+	protected := []string{defaultBranch()}
+	if head, err := git("-C", mainRoot, "symbolic-ref", "--short", "HEAD"); err == nil {
+		protected = append(protected, head)
+	}
+	return protected
 }
 
 // defaultBranch is origin/HEAD's branch, else init.defaultBranch, else master (as in git-wt).
