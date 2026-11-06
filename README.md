@@ -72,7 +72,7 @@ from the README to your .zshrc.
 | BRANCH      | Branch name (up to 28 cells), or `(detached)`                                             |
 | STATUS      | `↑` ahead / `↓` behind upstream, `!` conflicts, `+` staged, `~` modified, `?` untracked     |
 | PR          | Number and state (open / draft / merged / closed) of the newest PR for the branch          |
-| LAST COMMIT | Relative time and subject                                                                 |
+| LAST COMMIT | Subject and relative time                                                                 |
 | PATH        | Worktree path, `~` for home                                                               |
 
 In the picker, the current worktree is shown grayed out under the header and cannot be selected. When a table is wider than the terminal, PATH, the commit subject and BRANCH are shortened, in that order.

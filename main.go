@@ -235,7 +235,7 @@ func collectRows(wts []worktree, current string) []row {
 // lines are returned without it. With maxWidth > 0 the path, subject and branch
 // columns shrink, in that order, so every line fits.
 func renderTable(rows []row, maxWidth int) (string, []string) {
-	const colBranch, colSubject, colPath = 0, 4, 5
+	const colBranch, colSubject, colPath = 0, 3, 5
 	titles := []string{"BRANCH", "STATUS", "PR", "LAST COMMIT", "", "PATH"}
 	cells := make([][]string, len(rows))
 	for i, r := range rows {
@@ -243,8 +243,8 @@ func renderTable(rows []row, maxWidth int) (string, []string) {
 			ansi.Truncate(branchCell(r.wt), 28, "…"),
 			statusCell(r.status),
 			prCell(r.pr),
-			grayStyle.Render(r.when),
 			ansi.Truncate(r.subject, 50, "…"),
+			grayStyle.Render(r.when),
 			grayStyle.Render(tilde(r.wt.path)),
 		}
 	}
