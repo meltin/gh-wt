@@ -479,3 +479,21 @@ func TestQualifyStartPoint(t *testing.T) {
 		t.Errorf("with checkout.defaultRemote=up: %q, %v", got, err)
 	}
 }
+
+func TestCheckDestination(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "empty"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "full/x"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "file"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for name, wantErr := range map[string]bool{"missing": false, "empty": false, "full": true, "file": true} {
+		if err := checkDestination(filepath.Join(dir, name)); (err != nil) != wantErr {
+			t.Errorf("checkDestination(%s) = %v, want error %v", name, err, wantErr)
+		}
+	}
+}
