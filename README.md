@@ -85,12 +85,12 @@ gh wt only prints the path. To cd into it, add this to your .zshrc:
 | Column      | Content                                                                                   |
 | ----------- | ----------------------------------------------------------------------------------------- |
 | BRANCH      | Branch name (up to 28 cells), or `(detached)`                                             |
-| STATUS      | `↑` ahead / `↓` behind upstream, `!` conflicts, `+` staged, `~` modified, `?` untracked     |
+| CHANGES     | `↑` ahead / `↓` behind upstream, `!` conflicts, `+` staged, `~` modified, `?` untracked     |
 | PR          | Number and state (open / draft / merged / closed) of the newest PR for the branch          |
 | LAST COMMIT | Subject and relative time                                                                 |
 | PATH        | Worktree path, `~` for home                                                               |
 
-In the picker, the current worktree is shown grayed out under the header and cannot be selected. When a table is wider than the terminal, PATH, the commit subject and BRANCH are shortened, in that order.
+For a branch with an open PR, `↓` also counts commits pushed to the PR on GitHub that the worktree doesn't have yet, without fetching; `↓N` means there are such commits but they haven't been fetched, so they can't be counted. In the picker, the current worktree is shown grayed out under the header and cannot be selected. When a table is wider than the terminal, PATH, the commit subject and BRANCH are shortened, in that order.
 
 ## Creating worktrees
 

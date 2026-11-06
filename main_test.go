@@ -618,3 +618,117 @@ func TestCLIBranchAndOrphan(t *testing.T) {
 		}
 	}
 }
+
+func TestPRBehind(t *testing.T) {
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_AUTHOR_NAME", "t")
+	t.Setenv("GIT_AUTHOR_EMAIL", "t@t")
+	t.Setenv("GIT_COMMITTER_NAME", "t")
+	t.Setenv("GIT_COMMITTER_EMAIL", "t@t")
+	repo := t.TempDir()
+	run := func(args ...string) string {
+		t.Helper()
+		out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	run("init", "-q", "-b", "main")
+	run("commit", "-q", "--allow-empty", "-m", "base")
+	base := run("rev-parse", "HEAD")
+	run("commit", "-q", "--allow-empty", "-m", "pushed 1")
+	run("commit", "-q", "--allow-empty", "-m", "pushed 2")
+	head := run("rev-parse", "HEAD")
+	run("reset", "-q", "--hard", base) // the worktree is 2 commits behind the PR head
+
+	for _, c := range []struct {
+		oid   string
+		n     int
+		known bool
+	}{
+		{head, 2, true},                     // fetched: counted
+		{base, 0, true},                     // same as HEAD
+		{"", 0, true},                       // no PR head
+		{strings.Repeat("1", 40), 0, false}, // not fetched yet
+	} {
+		if n, known := prBehind(repo, c.oid); n != c.n || known != c.known {
+			t.Errorf("prBehind(%.7s) = %d, %v; want %d, %v", c.oid, n, known, c.n, c.known)
+		}
+	}
+	initStyles()
+	if got := ansi.Strip(statusCell(status{remoteNew: true, modified: 1})); got != "↓N ~1" {
+		t.Errorf("statusCell = %q", got)
+	}
+}
+
+func TestOriginRepoAndInOrigin(t *testing.T) {
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	repo := t.TempDir()
+	if out, err := exec.Command("git", "-C", repo, "init", "-q").CombinedOutput(); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	t.Chdir(repo)
+	for _, url := range []string{"git@github.com:me/fork.git", "https://github.com/me/fork.git", "ssh://git@github.com/me/fork"} {
+		_ = exec.Command("git", "remote", "remove", "origin").Run()
+		if out, err := exec.Command("git", "remote", "add", "origin", url).CombinedOutput(); err != nil {
+			t.Fatalf("%v\n%s", err, out)
+		}
+		if got := originRepo(); got != "me/fork" {
+			t.Errorf("originRepo(%s) = %q", url, got)
+		}
+	}
+	pr := func(cross bool, head string) pullRequest {
+		p := pullRequest{IsCrossRepository: cross}
+		p.HeadRepository.NameWithOwner = head
+		return p
+	}
+	for _, c := range []struct {
+		pr   pullRequest
+		want bool
+	}{
+		{pr(false, "up/proj"), true}, // same repository
+		{pr(true, "Me/Fork"), true},  // from origin, which is a fork
+		{pr(true, "someone/fork"), false},
+	} {
+		if got := inOrigin(c.pr, "me/fork"); got != c.want {
+			t.Errorf("inOrigin(%+v) = %v", c.pr, got)
+		}
+	}
+}
+
+// TestPRBehindNoLazyFetch: in a partial clone, an unfetched PR head must not
+// be fetched just to draw the table.
+func TestPRBehindNoLazyFetch(t *testing.T) {
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_AUTHOR_NAME", "t")
+	t.Setenv("GIT_AUTHOR_EMAIL", "t@t")
+	t.Setenv("GIT_COMMITTER_NAME", "t")
+	t.Setenv("GIT_COMMITTER_EMAIL", "t@t")
+	dir := t.TempDir()
+	server, clone := filepath.Join(dir, "server"), filepath.Join(dir, "clone")
+	git := func(args ...string) string {
+		t.Helper()
+		out, err := exec.Command("git", args...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	git("init", "-q", "-b", "main", server)
+	git("-C", server, "config", "uploadpack.allowFilter", "true")
+	git("-C", server, "config", "uploadpack.allowAnySHA1InWant", "true")
+	git("-C", server, "commit", "-q", "--allow-empty", "-m", "base")
+	git("clone", "-q", "--filter=blob:none", "file://"+server, clone)
+	git("-C", server, "commit", "-q", "--allow-empty", "-m", "pushed later")
+	head := git("-C", server, "rev-parse", "HEAD")
+
+	if n, known := prBehind(clone, head); known || n != 0 {
+		t.Fatalf("prBehind = %d, %v; want unknown", n, known)
+	}
+	check := exec.Command("git", "-C", clone, "cat-file", "-e", head+"^{commit}")
+	check.Env = append(os.Environ(), "GIT_NO_LAZY_FETCH=1") // checking must not fetch either
+	if err := check.Run(); err == nil {
+		t.Fatal("prBehind fetched the PR head into the partial clone")
+	}
+}

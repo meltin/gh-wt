@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/huh"
@@ -112,14 +113,20 @@ type worktree struct {
 }
 
 type pullRequest struct {
-	Number      int    `json:"number"`
-	State       string `json:"state"`
-	IsDraft     bool   `json:"isDraft"`
-	HeadRefName string `json:"headRefName"`
+	Number            int    `json:"number"`
+	State             string `json:"state"`
+	IsDraft           bool   `json:"isDraft"`
+	HeadRefName       string `json:"headRefName"`
+	HeadRefOid        string `json:"headRefOid"`
+	IsCrossRepository bool   `json:"isCrossRepository"`
+	HeadRepository    struct {
+		NameWithOwner string `json:"nameWithOwner"`
+	} `json:"headRepository"`
 }
 
 type status struct {
 	ahead, behind, staged, modified, untracked, conflicts int
+	remoteNew                                             bool // the PR has commits not fetched yet
 }
 
 type row struct {
@@ -854,6 +861,13 @@ func collectRows(wts []worktree, current string) []row {
 		for i := range rows {
 			if pr, ok := res.prs[rows[i].wt.branch]; ok && rows[i].wt.branch != "" {
 				rows[i].pr = &pr
+				if pr.State == "OPEN" {
+					n, known := prBehind(rows[i].wt.path, pr.HeadRefOid)
+					if known { // the PR head is fresher than the remote-tracking ref
+						rows[i].status.behind = n
+					}
+					rows[i].status.remoteNew = !known
+				}
 			}
 		}
 	}
@@ -876,7 +890,7 @@ func collectRows(wts []worktree, current string) []row {
 // columns shrink, in that order, so every line fits.
 func renderTable(rows []row, maxWidth int) (string, []string) {
 	const colBranch, colSubject, colPath = 0, 3, 5
-	titles := []string{"BRANCH", "STATUS", "PR", "LAST COMMIT", "", "PATH"}
+	titles := []string{"BRANCH", "CHANGES", "PR", "LAST COMMIT", "", "PATH"}
 	cells := make([][]string, len(rows))
 	for i, r := range rows {
 		cells[i] = []string{
@@ -947,6 +961,31 @@ func branchCell(wt worktree) string {
 	return cyanStyle.Render(iconBranch + " " + wt.branch)
 }
 
+// prBehind counts the commits of the PR head (on GitHub) missing from the
+// worktree's HEAD, so new pushes show without a fetch. known is false when
+// the head commit isn't fetched yet, so it can't be counted.
+func prBehind(path, headOid string) (n int, known bool) {
+	if headOid == "" {
+		return 0, true
+	}
+	// GIT_NO_LAZY_FETCH: in a partial clone, don't fetch the missing commit.
+	noFetch := func(args ...string) (string, error) {
+		cmd := exec.Command("git", append([]string{"-C", path}, args...)...)
+		cmd.Env = append(os.Environ(), "GIT_NO_LAZY_FETCH=1")
+		out, err := cmd.Output()
+		return strings.TrimSpace(string(out)), err
+	}
+	if _, err := noFetch("cat-file", "-e", headOid+"^{commit}"); err != nil {
+		return 0, false
+	}
+	out, err := noFetch("rev-list", "--count", "HEAD.."+headOid)
+	if err != nil {
+		return 0, true
+	}
+	n, _ = strconv.Atoi(out)
+	return n, true
+}
+
 func statusCell(s status) string {
 	var parts []string
 	add := func(n int, prefix string, style lipgloss.Style) {
@@ -955,7 +994,11 @@ func statusCell(s status) string {
 		}
 	}
 	add(s.ahead, "↑", cyanStyle)
-	add(s.behind, "↓", cyanStyle)
+	if s.remoteNew {
+		parts = append(parts, cyanStyle.Render("↓N")) // commits on GitHub, count unknown until fetched
+	} else {
+		add(s.behind, "↓", cyanStyle)
+	}
 	add(s.conflicts, "!", redStyle)
 	add(s.staged, "+", greenStyle)
 	add(s.modified, "~", yellowStyle)
@@ -1007,7 +1050,7 @@ func parseStatus(out string) status {
 
 // fetchPRs returns the newest PR per head branch, or gh's error message.
 func fetchPRs() (map[string]pullRequest, string) {
-	cmd := exec.Command("gh", "pr", "list", "--state", "all", "--limit", "200", "--json", "headRefName,number,state,isDraft")
+	cmd := exec.Command("gh", "pr", "list", "--state", "all", "--limit", "200", "--json", "headRefName,headRefOid,headRepository,isCrossRepository,number,state,isDraft")
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
@@ -1018,9 +1061,10 @@ func fetchPRs() (map[string]pullRequest, string) {
 	if err := json.Unmarshal(out, &prs); err != nil {
 		return nil, err.Error()
 	}
+	origin := originRepo()
 	m := make(map[string]pullRequest, len(prs))
-	for _, pr := range prs { // gh returns newest first
-		if _, ok := m[pr.HeadRefName]; !ok {
+	for _, pr := range prs { // gh returns newest first; an open PR wins over closed ones
+		if prev, ok := m[pr.HeadRefName]; inOrigin(pr, origin) && (!ok || (prev.State != "OPEN" && pr.State == "OPEN")) {
 			m[pr.HeadRefName] = pr
 		}
 	}
@@ -1071,6 +1115,27 @@ func parseWorktrees(out string) []worktree {
 func currentRoot() string {
 	root, _ := git("rev-parse", "--show-toplevel")
 	return root
+}
+
+// originRepo is "owner/name" parsed from origin's URL, or "" if it can't be.
+func originRepo() string {
+	url, err := git("remote", "get-url", "origin")
+	if err != nil {
+		return ""
+	}
+	url = strings.TrimSuffix(strings.TrimSuffix(url, "/"), ".git")
+	parts := strings.FieldsFunc(url, func(r rune) bool { return r == '/' || r == ':' })
+	if len(parts) < 2 {
+		return ""
+	}
+	return parts[len(parts)-2] + "/" + parts[len(parts)-1]
+}
+
+// inOrigin reports whether the PR's branch can be found on origin: a PR from
+// the same repository, or from origin itself when origin is a fork. A
+// stranger's fork branch that merely shares a local branch's name is not.
+func inOrigin(pr pullRequest, origin string) bool {
+	return !pr.IsCrossRepository || (origin != "" && strings.EqualFold(pr.HeadRepository.NameWithOwner, origin))
 }
 
 func git(args ...string) (string, error) {
