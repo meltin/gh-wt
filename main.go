@@ -366,12 +366,9 @@ func renameWorktree(old []string, newName string, force bool) (string, error) {
 		}
 		// Never move a worktree into another one (or into itself): deleting the
 		// outer worktree later would delete it too.
-		for dir := filepath.Dir(newPath); within(dir, base); dir = filepath.Dir(dir) {
+		for dir := filepath.Dir(newPath); within(dir, base) && !samePath(dir, base); dir = filepath.Dir(dir) {
 			if slices.ContainsFunc(wts, func(wt worktree) bool { return samePath(wt.path, dir) }) {
 				return "", fmt.Errorf("%s would be inside the worktree %s", tilde(newPath), tilde(dir))
-			}
-			if samePath(dir, base) {
-				break
 			}
 		}
 	}
@@ -379,7 +376,7 @@ func renameWorktree(old []string, newName string, force bool) (string, error) {
 	// Rename the branch first: git checks every ref conflict (existing,
 	// ancestor or checked-out branches) before anything on disk changes.
 	isCurrent := samePath(src.path, current)
-	_, existed := git("show-ref", "--verify", "--quiet", "refs/heads/"+newName)
+	overwritten, _ := git("show-ref", "--verify", "--hash", "refs/heads/"+newName) // restored if the move fails
 	if renamesBranch {
 		flag := "-m"
 		if force {
@@ -394,13 +391,20 @@ func renameWorktree(old []string, newName string, force bool) (string, error) {
 		if force {
 			args = append(args, "--force", "--force") // twice to move a locked worktree
 		}
+		// Remember the topmost parent MkdirAll creates, so a failure removes only that.
+		created := ""
+		for dir := filepath.Dir(newPath); !exists(dir); dir = filepath.Dir(dir) {
+			created = dir
+		}
 		err := os.MkdirAll(filepath.Dir(newPath), 0o755)
 		if err == nil {
 			err = gitLoud(append(args, src.path, newPath)...)
 		}
 		if err != nil {
-			removeEmptyParents(filepath.Dir(newPath), base)
-			return "", undoBranchRename(mainRoot, src.branch, newName, renamesBranch, renamesBranch && existed == nil)
+			if created != "" {
+				removeEmptyParents(filepath.Dir(newPath), filepath.Dir(created))
+			}
+			return "", undoBranchRename(mainRoot, src.branch, newName, renamesBranch, overwritten)
 		}
 		removeEmptyParents(filepath.Dir(src.path), base) // e.g. "feat/" after renaming feat/x
 	}
@@ -420,27 +424,35 @@ func renameWorktree(old []string, newName string, force bool) (string, error) {
 
 // undoBranchRename restores the branch name after the worktree failed to move
 // and builds the error describing the state left behind.
-func undoBranchRename(mainRoot, oldName, newName string, renamed, overwrote bool) error {
+// overwritten is the commit newName pointed to before -M replaced it, if any.
+func undoBranchRename(mainRoot, oldName, newName string, renamed bool, overwritten string) error {
 	if !renamed {
 		return fmt.Errorf("failed to move worktree %q", oldName)
 	}
 	if _, err := git("-C", mainRoot, "branch", "-m", "--", newName, oldName); err != nil {
 		return fmt.Errorf("failed to move worktree; the branch is now %q and could not be renamed back to %q", newName, oldName)
 	}
-	if overwrote {
-		return fmt.Errorf("failed to move worktree; renamed the branch back to %q, but the overwritten branch %q is not restored", oldName, newName)
+	if overwritten != "" {
+		if _, err := git("-C", mainRoot, "branch", "--", newName, overwritten); err != nil {
+			return fmt.Errorf("failed to move worktree; renamed the branch back to %q, but could not restore %q at %s", oldName, newName, overwritten)
+		}
 	}
 	return fmt.Errorf("failed to move worktree; renamed the branch back to %q", oldName)
 }
 
-// removeEmptyParents removes dir and its parents while they are empty and
-// strictly inside base.
-func removeEmptyParents(dir, base string) {
-	for ; within(dir, base) && !samePath(dir, base); dir = filepath.Dir(dir) {
-		if os.Remove(dir) != nil {
+// removeEmptyParents removes dir and its parents while they are empty
+// directories strictly inside stop.
+func removeEmptyParents(dir, stop string) {
+	for ; within(dir, stop) && !samePath(dir, stop); dir = filepath.Dir(dir) {
+		if info, err := os.Lstat(dir); err != nil || !info.IsDir() || os.Remove(dir) != nil {
 			return
 		}
 	}
+}
+
+func exists(path string) bool {
+	_, err := os.Lstat(path)
+	return err == nil
 }
 
 // protectedBranches are never deleted or renamed: the default branch and the
@@ -575,7 +587,7 @@ func copyFiles(src, dst, base string) {
 			continue
 		}
 		from, to := filepath.Join(src, e), filepath.Join(dst, e)
-		if skipBase && within(from, base) {
+		if (skipBase && within(from, base)) || samePath(from, base) {
 			continue
 		}
 		if strings.HasSuffix(e, "/") {

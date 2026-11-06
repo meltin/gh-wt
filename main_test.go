@@ -349,3 +349,62 @@ func TestRenameWorktreeConflicts(t *testing.T) {
 		t.Fatal("want real/b on branch b and no empty real/deep under the symlinked base")
 	}
 }
+
+// TestRenameWorktreeFailedMove checks that a move failing after the branch was
+// renamed leaves everything as it was, including pre-existing paths under base
+// and a branch that -M overwrote.
+func TestRenameWorktreeFailedMove(t *testing.T) {
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_AUTHOR_NAME", "t")
+	t.Setenv("GIT_AUTHOR_EMAIL", "t@t")
+	t.Setenv("GIT_COMMITTER_NAME", "t")
+	t.Setenv("GIT_COMMITTER_EMAIL", "t@t")
+	dir, _ := filepath.EvalSymlinks(t.TempDir())
+	repo := filepath.Join(dir, "repo")
+	wt := filepath.Join(repo, ".wt")
+	run := func(args ...string) {
+		t.Helper()
+		if out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	run("init", "-q", "-b", "main")
+	run("commit", "-q", "--allow-empty", "-m", "init")
+	run("worktree", "add", "-q", "-b", "lk", filepath.Join(wt, "lk"))
+	run("worktree", "lock", filepath.Join(wt, "lk"))
+	run("branch", "ro/z")
+	run("-C", filepath.Join(wt, "lk"), "commit", "-q", "--allow-empty", "-m", "lk only") // lk and ro/z differ
+	if err := os.WriteFile(filepath.Join(wt, "notes"), []byte("keep"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(wt, "ro"), 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(filepath.Join(wt, "ro"), 0o755) })
+	t.Chdir(repo)
+	roTip, _ := git("rev-parse", "ro/z")
+
+	// -m on a locked worktree: git refuses the move after the branch was renamed.
+	if _, err := renameWorktree([]string{"lk"}, "notes/x", false); err == nil {
+		t.Fatal("rename into a path under a regular file should fail")
+	}
+	if b, _ := os.ReadFile(filepath.Join(wt, "notes")); string(b) != "keep" {
+		t.Fatal("a failed rename removed the pre-existing file .wt/notes")
+	}
+	// -M over ro/z into an unwritable directory: the move fails, ro/z comes back.
+	if _, err := renameWorktree([]string{"lk"}, "ro/z", true); err == nil {
+		t.Fatal("moving into an unwritable directory should fail")
+	}
+	if tip, _ := git("rev-parse", "ro/z"); tip != roTip {
+		t.Fatalf("ro/z = %s, want the overwritten tip %s restored", tip, roTip)
+	}
+	if b, _ := git("-C", filepath.Join(wt, "lk"), "branch", "--show-current"); b != "lk" {
+		t.Fatalf("branch = %q, want lk renamed back", b)
+	}
+	if _, err := os.Stat(filepath.Join(wt, "ro")); err != nil {
+		t.Fatal("a failed rename removed the pre-existing directory .wt/ro")
+	}
+}
