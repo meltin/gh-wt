@@ -618,3 +618,46 @@ func TestCLIBranchAndOrphan(t *testing.T) {
 		}
 	}
 }
+
+func TestPRBehind(t *testing.T) {
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_AUTHOR_NAME", "t")
+	t.Setenv("GIT_AUTHOR_EMAIL", "t@t")
+	t.Setenv("GIT_COMMITTER_NAME", "t")
+	t.Setenv("GIT_COMMITTER_EMAIL", "t@t")
+	repo := t.TempDir()
+	run := func(args ...string) string {
+		t.Helper()
+		out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	run("init", "-q", "-b", "main")
+	run("commit", "-q", "--allow-empty", "-m", "base")
+	base := run("rev-parse", "HEAD")
+	run("commit", "-q", "--allow-empty", "-m", "pushed 1")
+	run("commit", "-q", "--allow-empty", "-m", "pushed 2")
+	head := run("rev-parse", "HEAD")
+	run("reset", "-q", "--hard", base) // the worktree is 2 commits behind the PR head
+
+	for _, c := range []struct {
+		oid   string
+		n     int
+		known bool
+	}{
+		{head, 2, true},                     // fetched: counted
+		{base, 0, true},                     // same as HEAD
+		{"", 0, true},                       // no PR head
+		{strings.Repeat("1", 40), 0, false}, // not fetched yet
+	} {
+		if n, known := prBehind(repo, c.oid); n != c.n || known != c.known {
+			t.Errorf("prBehind(%.7s) = %d, %v; want %d, %v", c.oid, n, known, c.n, c.known)
+		}
+	}
+	initStyles()
+	if got := ansi.Strip(statusCell(status{remoteNew: true, modified: 1})); got != "↓N ~1" {
+		t.Errorf("statusCell = %q", got)
+	}
+}
