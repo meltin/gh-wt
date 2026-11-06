@@ -577,6 +577,19 @@ func TestCLIBranchAndOrphan(t *testing.T) {
 			t.Errorf("gh wt %v: %q, %v", args, p, err)
 		}
 	}
+	// --init zsh prints a function zsh accepts; other shells are refused.
+	if out, err := wt("--init", "zsh"); err != nil || !strings.Contains(out, "gh() {") {
+		t.Errorf("--init zsh: %v", err)
+	} else if zsh, err := exec.LookPath("zsh"); err == nil {
+		check := exec.Command(zsh, "-n")
+		check.Stdin = strings.NewReader(out)
+		if b, err := check.CombinedOutput(); err != nil {
+			t.Errorf("zsh -n on --init output: %v\n%s", err, b)
+		}
+	}
+	if _, err := wt("--init", "fish"); err == nil {
+		t.Error("--init fish should fail")
+	}
 	if out, err := wt("short", "-h"); err != nil || !strings.Contains(out, "USAGE") {
 		t.Errorf("-h after a name should print help: %v", err)
 	}

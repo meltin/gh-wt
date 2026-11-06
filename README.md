@@ -27,28 +27,15 @@ gh extension install meltin/gh-wt
 
 ### Shell integration (zsh)
 
-An extension runs as a child process, so it cannot change your shell's directory. `gh wt` prints the path of the worktree, and this function in your `.zshrc` does the `cd`:
+An extension runs as a child process, so it cannot change your shell's directory. `gh wt` prints the path of the worktree, and a small `gh()` shell function does the `cd`. Add this to your `.zshrc`:
 
 ```zsh
-gh() {
-  if [[ $1 == wt && $2 != (-l|--list|-h|--help) ]]; then
-    local out rc last
-    out=$(command gh "$@"); rc=$?
-    last=${out##*$'\n'}
-    if [[ -d $last ]]; then
-      [[ $out == *$'\n'* ]] && print -r -- "${out%$'\n'*}"
-      cd -- "$last"
-    elif [[ -n $out ]]; then
-      print -r -- "$out"
-    fi
-    return $rc
-  else
-    command gh "$@"
-  fi
-}
+eval "$(gh wt --init zsh)"
 ```
 
-Like git-wt's shell integration, every `gh wt` call is intercepted: when the last line of its output is a directory, the function moves there and prints the lines before it. The exit status is passed through, so if a hook fails after creating a worktree you are still moved into it and the status is non-zero. `gh wt -l` and `gh wt --help` run directly, keeping colors and the terminal width. Every other `gh` command runs as usual.
+Like git-wt's shell integration, the function intercepts every `gh wt` call: when the last line of its output is a directory, it moves there and prints the lines before it. The exit status is passed through, so if a hook fails after creating a worktree you are still moved into it and the status is non-zero. `gh wt -l`, `gh wt --help` and `gh wt --init` run directly, keeping colors and the terminal width. Every other `gh` command runs as usual.
+
+Run `gh wt --init zsh` to read the function. Because it is loaded at shell startup, upgrading gh-wt updates it the next time you open a shell.
 
 ## Usage
 
@@ -74,6 +61,7 @@ FLAGS
   -D, --force-delete   Delete even with changes or an unmerged branch
   -m, --move           Rename a worktree's directory and branch
   -M, --force-move     Rename over an existing branch, or a locked worktree
+      --init zsh       Print the shell function that cds into the worktree
   -h, --help           Show help for command
 
 EXAMPLES
@@ -88,8 +76,8 @@ EXAMPLES
 
 A name is always a target, so "gh wt list" creates a worktree named list.
 
-gh wt only prints the path. To cd into it, add the shell function
-from the README to your .zshrc.
+gh wt only prints the path. To cd into it, add this to your .zshrc:
+  eval "$(gh wt --init zsh)"
 ```
 
 ### Columns
