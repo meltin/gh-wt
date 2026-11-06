@@ -275,6 +275,7 @@ func deleteTargets(targets []string, force bool) (string, error) {
 		resolved[i] = target{name, wt, ok}
 	}
 
+	wd, _ := os.Getwd()
 	cdMain := ""
 	done := map[string]bool{}
 	for _, t := range resolved {
@@ -322,7 +323,17 @@ func deleteTargets(targets []string, force bool) (string, error) {
 			note("Deleted worktree %q", wt.branch)
 		}
 	}
-	return cdMain, nil
+	return leaveIfGone(cdMain, wd, mainRoot), nil
+}
+
+// leaveIfGone returns cd, or mainRoot when the shell's directory wd was removed
+// along the way (e.g. an emptied parent like .wt/feat), so it doesn't stay in a
+// deleted directory.
+func leaveIfGone(cd, wd, mainRoot string) string {
+	if cd == "" && wd != "" && !exists(wd) {
+		return mainRoot
+	}
+	return cd
 }
 
 // renameWorktree moves a linked worktree to <base>/<newName> and renames its
@@ -377,6 +388,7 @@ func renameWorktree(old []string, newName string, force bool) (string, error) {
 	// Rename the branch first: git checks every ref conflict (existing,
 	// ancestor or checked-out branches) before anything on disk changes.
 	isCurrent := samePath(src.path, current)
+	wd, _ := os.Getwd()
 	overwritten, _ := git("show-ref", "--verify", "--hash", "refs/heads/"+newName) // restored if the move fails
 	if renamesBranch {
 		flag := "-m"
@@ -420,7 +432,7 @@ func renameWorktree(old []string, newName string, force bool) (string, error) {
 	if isCurrent {
 		return newPath, nil
 	}
-	return "", nil
+	return leaveIfGone("", wd, mainRoot), nil
 }
 
 // undoBranchRename restores the branch name after the worktree failed to move

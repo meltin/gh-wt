@@ -132,6 +132,14 @@ func TestDeleteTargets(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(repo, ".wt/nest")); !os.IsNotExist(err) {
 		t.Fatal("deleting nest/x should remove the empty .wt/nest")
 	}
+
+	// From an empty parent that gets removed, the shell is sent to the main repo.
+	run("worktree", "add", "-q", "-b", "nest2/y", filepath.Join(repo, ".wt/nest2/y"))
+	t.Chdir(filepath.Join(repo, ".wt/nest2"))
+	if cd, err := deleteTargets([]string{"nest2/y"}, false); err != nil || cd != repo {
+		t.Fatalf("delete from an emptied parent: cd=%q err=%v, want %q", cd, err, repo)
+	}
+	t.Chdir(repo)
 	if len(mustWorktrees()) != 1 {
 		t.Fatalf("worktrees left: %v", mustWorktrees())
 	}
