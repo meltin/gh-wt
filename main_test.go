@@ -1,6 +1,9 @@
 package main
 
 import (
+	"os"
+	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -31,6 +34,7 @@ prunable gitdir file points to non-existent location
 		{path: "/repo", branch: "main"},
 		{path: "/wt/feat/x", branch: "feat/x"},
 		{path: "/wt/detached"},
+		{path: "/wt/gone", branch: "gone", prunable: true},
 	}
 	if !slices.Equal(got, want) {
 		t.Fatalf("got %+v, want %+v", got, want)
@@ -86,5 +90,128 @@ func TestExpandBaseDir(t *testing.T) {
 	}
 	if !within("/a/b/c", "/a/b") || within("/a/bc", "/a/b") || !within("/a/b", "/a/b") {
 		t.Error("within")
+	}
+}
+
+func TestDeleteTargets(t *testing.T) {
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_AUTHOR_NAME", "t")
+	t.Setenv("GIT_AUTHOR_EMAIL", "t@t")
+	t.Setenv("GIT_COMMITTER_NAME", "t")
+	t.Setenv("GIT_COMMITTER_EMAIL", "t@t")
+	dir, _ := filepath.EvalSymlinks(t.TempDir())
+	repo := filepath.Join(dir, "repo")
+	run := func(args ...string) {
+		t.Helper()
+		if out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	run("init", "-q", "-b", "main")
+	run("config", "init.defaultBranch", "main")
+	run("commit", "-q", "--allow-empty", "-m", "init")
+	run("worktree", "add", "-q", "-b", "merged", filepath.Join(repo, ".wt/merged"))
+	run("worktree", "add", "-q", "-b", "unmerged", filepath.Join(repo, ".wt/unmerged"))
+	run("-C", filepath.Join(repo, ".wt/unmerged"), "commit", "-q", "--allow-empty", "-m", "wip")
+	run("branch", "only-branch")
+	t.Chdir(filepath.Join(repo, ".wt/merged"))
+
+	cd, err := deleteTargets([]string{"merged", "unmerged", "only-branch"}, false)
+	if err != nil || cd != repo {
+		t.Fatalf("safe delete: cd=%q err=%v, want cd=%q", cd, err, repo)
+	}
+	t.Chdir(repo)
+	branches, _ := git("branch", "--format=%(refname:short)")
+	if branches != "main\nunmerged" {
+		t.Fatalf("after -d, branches = %q, want main and the unmerged branch kept", branches)
+	}
+	if len(mustWorktrees()) != 1 {
+		t.Fatalf("worktrees left: %v", mustWorktrees())
+	}
+	if _, err := deleteTargets([]string{"unmerged"}, true); err != nil {
+		t.Fatalf("-D unmerged branch: %v", err)
+	}
+	if _, err := deleteTargets([]string{"main"}, true); err == nil {
+		t.Fatal("deleting the default branch should fail")
+	}
+	if _, err := deleteTargets([]string{"nope"}, false); err == nil {
+		t.Fatal("unknown target should fail")
+	}
+}
+
+// TestDeleteTargetsEdgeCases covers cases found in review: lookup precedence,
+// the main HEAD branch, vanished worktrees, empty and duplicate targets.
+func TestDeleteTargetsEdgeCases(t *testing.T) {
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_AUTHOR_NAME", "t")
+	t.Setenv("GIT_AUTHOR_EMAIL", "t@t")
+	t.Setenv("GIT_COMMITTER_NAME", "t")
+	t.Setenv("GIT_COMMITTER_EMAIL", "t@t")
+	dir, _ := filepath.EvalSymlinks(t.TempDir())
+	repo := filepath.Join(dir, "repo")
+	run := func(args ...string) {
+		t.Helper()
+		if out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	run("init", "-q", "-b", "trunk") // no origin/HEAD or init.defaultBranch: default falls back to master
+	run("commit", "-q", "--allow-empty", "-m", "init")
+	run("branch", "a")
+	run("branch", "b")
+	run("worktree", "add", "-q", filepath.Join(repo, ".wt/a"), "b") // dir "a" holds branch b
+	run("worktree", "add", "-q", filepath.Join(repo, ".wt/b"), "a") // dir "b" holds branch a
+	run("worktree", "add", "-q", "-b", "gone", filepath.Join(repo, ".wt/gone"))
+	if err := os.RemoveAll(filepath.Join(repo, ".wt/gone")); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(filepath.Join(repo, ".wt/a"))
+
+	if _, err := deleteTargets([]string{""}, true); err == nil {
+		t.Fatal("empty target should fail")
+	}
+	// "a" is a branch name first: it must remove .wt/b (branch a), not .wt/a.
+	if _, err := deleteTargets([]string{"a", "a"}, false); err != nil {
+		t.Fatalf("duplicate target: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(repo, ".wt/a")); err != nil {
+		t.Fatalf(".wt/a should remain: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(repo, ".wt/b")); !os.IsNotExist(err) {
+		t.Fatal(".wt/b should be removed")
+	}
+	if _, err := deleteTargets([]string{"gone"}, false); err != nil {
+		t.Fatalf("vanished worktree: %v", err)
+	}
+	branches, _ := git("-C", repo, "branch", "--format=%(refname:short)")
+	if branches != "b\ntrunk" {
+		t.Fatalf("branches = %q, want b and trunk", branches)
+	}
+
+	// Bare repository whose HEAD is trunk while the default falls back to master:
+	// trunk's worktree can go, but the branch must stay or HEAD would dangle.
+	bare := filepath.Join(dir, "bare.git")
+	if out, err := exec.Command("git", "clone", "-q", "--bare", repo, bare).CombinedOutput(); err != nil {
+		t.Fatalf("clone --bare: %v\n%s", err, out)
+	}
+	repo = bare
+	run("worktree", "add", "-q", "-b", "feat", filepath.Join(bare, "wt/feat"))
+	run("worktree", "add", "-q", filepath.Join(bare, "wt/trunk"), "trunk")
+	t.Chdir(filepath.Join(bare, "wt/feat"))
+	if _, err := deleteTargets([]string{"trunk"}, true); err != nil {
+		t.Fatalf("removing the HEAD branch's worktree: %v", err)
+	}
+	_, err := deleteTargets([]string{"trunk"}, true)
+	if err == nil || !strings.Contains(err.Error(), "protected") {
+		t.Fatalf("deleting the bare HEAD branch: err = %v, want protected", err)
+	}
+	if _, err := git("-C", bare, "rev-parse", "--verify", "-q", "HEAD"); err != nil {
+		t.Fatal("bare HEAD dangles")
 	}
 }

@@ -7,6 +7,7 @@ A GitHub CLI extension to switch between git worktrees and see their state at a 
 - `gh wt` shows the other worktrees with their status, PR and last commit, and moves you to the one you pick
 - `gh wt <branch|worktree|path>` moves you to that worktree, creating the worktree (and the branch) if needed
 - `gh wt -l` lists all worktrees
+- `gh wt -d <target>...` deletes worktrees and their branches
 
 It only needs `git` and `gh`. Icons use [Nerd Fonts](https://www.nerdfonts.com/), so set a Nerd Font in your terminal.
 
@@ -58,17 +59,21 @@ Switch between git worktrees, creating them as needed.
 
 USAGE
   gh wt [<branch|worktree|path>]
+  gh wt -d|-D <branch|worktree|path>...
   gh wt [flags]
 
 FLAGS
-  -l, --list   List worktrees with status, PR and last commit
-  -h, --help   Show help for command
+  -l, --list           List worktrees with status, PR and last commit
+  -d, --delete         Delete worktrees and their branches (safe)
+  -D, --force-delete   Delete even with changes or an unmerged branch
+  -h, --help           Show help for command
 
 EXAMPLES
-  $ gh wt          # Select a worktree and print its path
-  $ gh wt feat/x   # Print the path of the worktree for feat/x,
-                   # creating the worktree (and branch) if needed
-  $ gh wt -l       # List worktrees
+  $ gh wt            # Select a worktree and print its path
+  $ gh wt feat/x     # Print the path of the worktree for feat/x,
+                     # creating the worktree (and branch) if needed
+  $ gh wt -l         # List worktrees
+  $ gh wt -d feat/x  # Delete the worktree and branch feat/x
 
 A name is always a target, so "gh wt list" creates a worktree named list.
 
@@ -93,6 +98,20 @@ In the picker, the current worktree is shown grayed out under the header and can
 When no worktree matches, `gh wt <name>` runs `git worktree add` under the base directory: it checks out the local branch `<name>`, or a remote branch of that name with tracking, or creates a new branch from `HEAD`. A name is always a target, so `gh wt list` creates a worktree named `list`.
 
 A target can be a branch name, a worktree directory name relative to the base directory, or a path to an existing worktree.
+
+## Deleting worktrees
+
+`gh wt -d <target>...` removes each worktree and then its local branch, like git-wt:
+
+- A worktree with modified or untracked files is not removed (ignored files such as `node_modules` don't count)
+- A branch that is not fully merged is kept, with a message; the exit status is still 0
+- The default branch (`origin/HEAD`, else `init.defaultBranch`, else `master`) and the branch the main repository's `HEAD` points to are never deleted; their worktrees can be
+- A target with no worktree but a local branch deletes just the branch
+- A worktree whose directory was already removed is cleaned up as well
+- Targets are matched as a branch first, then a directory under the base directory, then a path
+- Processing stops at the first target that fails
+
+`gh wt -D` removes worktrees with changes and deletes unmerged branches. When the current worktree is deleted, the shell function moves you to the main repository.
 
 ### Configuration
 

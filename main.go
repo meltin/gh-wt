@@ -23,17 +23,21 @@ const helpText = `Switch between git worktrees, creating them as needed.
 
 USAGE
   gh wt [<branch|worktree|path>]
+  gh wt -d|-D <branch|worktree|path>...
   gh wt [flags]
 
 FLAGS
-  -l, --list   List worktrees with status, PR and last commit
-  -h, --help   Show help for command
+  -l, --list           List worktrees with status, PR and last commit
+  -d, --delete         Delete worktrees and their branches (safe)
+  -D, --force-delete   Delete even with changes or an unmerged branch
+  -h, --help           Show help for command
 
 EXAMPLES
-  $ gh wt          # Select a worktree and print its path
-  $ gh wt feat/x   # Print the path of the worktree for feat/x,
-                   # creating the worktree (and branch) if needed
-  $ gh wt -l       # List worktrees
+  $ gh wt            # Select a worktree and print its path
+  $ gh wt feat/x     # Print the path of the worktree for feat/x,
+                     # creating the worktree (and branch) if needed
+  $ gh wt -l         # List worktrees
+  $ gh wt -d feat/x  # Delete the worktree and branch feat/x
 
 A name is always a target, so "gh wt list" creates a worktree named list.
 
@@ -68,8 +72,9 @@ func initStyles() {
 }
 
 type worktree struct {
-	path   string
-	branch string // short name, empty when detached
+	path     string
+	branch   string // short name, empty when detached
+	prunable bool   // directory is gone; only delete deals with these
 }
 
 type pullRequest struct {
@@ -107,6 +112,17 @@ func main() {
 		fmt.Print(helpText)
 	case len(args) == 1 && (args[0] == "-l" || args[0] == "--list"):
 		listWorktrees()
+	case args[0] == "-d" || args[0] == "--delete" || args[0] == "-D" || args[0] == "--force-delete":
+		if len(args) < 2 {
+			fail("usage: gh wt -d <branch|worktree|path>...")
+		}
+		dir, err := deleteTargets(args[1:], args[0] == "-D" || args[0] == "--force-delete")
+		if dir != "" {
+			fmt.Println(dir) // the current worktree is gone; let the shell function cd out
+		}
+		if err != nil {
+			fail(err.Error())
+		}
 	case strings.HasPrefix(args[0], "-"):
 		fail(fmt.Sprintf("unknown flag: %s", args[0]))
 	case len(args) == 1:
@@ -117,7 +133,7 @@ func main() {
 }
 
 func selectWorktree() {
-	wts := mustWorktrees()
+	wts := liveWorktrees()
 	current := currentRoot()
 	if !slices.ContainsFunc(wts, func(wt worktree) bool { return !samePath(wt.path, current) }) {
 		fail("no other worktrees")
@@ -161,29 +177,158 @@ func selectWorktree() {
 // directory under wt.basedir, or a path. Without a match it creates the
 // worktree (and the branch if needed) under wt.basedir, like git-wt.
 func switchTo(name string) {
-	wts := mustWorktrees()
+	if name == "" {
+		fail("empty target")
+	}
+	_, base := repoBase()
+	if wt, ok := findWorktree(liveWorktrees(), base, name); ok {
+		fmt.Println(wt.path)
+		return
+	}
+	createWorktree(name, filepath.Join(base, name), base)
+}
+
+// repoBase returns the main repository root and the expanded wt.basedir.
+func repoBase() (mainRoot, base string) {
 	commonDir, err := git("rev-parse", "--path-format=absolute", "--git-common-dir")
 	if err != nil {
 		exitWithStatus(err)
 	}
 	// The main repository is the parent of the shared .git, even from a linked
 	// worktree; a bare repository is the common dir itself (as in git-wt).
-	mainRoot := commonDir
+	mainRoot = commonDir
 	if filepath.Base(commonDir) == ".git" {
 		mainRoot = filepath.Dir(commonDir)
 	}
 	baseCfg, _ := git("config", "--get", "wt.basedir")
 	home, _ := os.UserHomeDir()
-	base := expandBaseDir(baseCfg, mainRoot, home)
+	return mainRoot, expandBaseDir(baseCfg, mainRoot, home)
+}
 
+// findWorktree matches name as a branch, then a directory under base, then a
+// path, in separate passes like git-wt, so a branch name always wins.
+func findWorktree(wts []worktree, base, name string) (worktree, bool) {
+	if name == "" {
+		return worktree{}, false
+	}
 	abs, _ := filepath.Abs(name)
-	for _, wt := range wts {
-		if wt.branch == name || samePath(wt.path, filepath.Join(base, name)) || samePath(wt.path, abs) {
-			fmt.Println(wt.path)
-			return
+	for _, match := range []func(worktree) bool{
+		func(wt worktree) bool { return wt.branch == name },
+		func(wt worktree) bool { return samePath(wt.path, filepath.Join(base, name)) },
+		func(wt worktree) bool { return samePath(wt.path, abs) },
+	} {
+		if i := slices.IndexFunc(wts, match); i >= 0 {
+			return wts[i], true
 		}
 	}
-	createWorktree(name, filepath.Join(base, name), base)
+	return worktree{}, false
+}
+
+// deleteTargets removes each target's worktree and local branch like git-wt's
+// -d (safe) and -D (force), stopping at the first error. A dirty worktree is
+// refused by git worktree remove; an unmerged or protected branch is kept with a
+// message. It returns the main repository root when the current worktree was
+// removed, so the shell function can move out of it.
+func deleteTargets(targets []string, force bool) (string, error) {
+	wts := mustWorktrees() // including prunable ones, so a vanished worktree can be cleaned up
+	mainRoot, base := repoBase()
+	current := currentRoot()
+	// Keep the default branch, and the branch the main repository's HEAD points
+	// to: in a bare repository nothing else stops git from deleting it.
+	protected := []string{defaultBranch()}
+	if head, err := git("-C", mainRoot, "symbolic-ref", "--short", "HEAD"); err == nil {
+		protected = append(protected, head)
+	}
+	removeArgs, branchFlag := []string{"-C", mainRoot, "worktree", "remove"}, "-d"
+	if force {
+		removeArgs, branchFlag = append(removeArgs, "--force"), "-D"
+	}
+
+	// Resolve every target before removing anything: paths are relative to a
+	// cwd that may be gone afterwards, and duplicates must be handled once.
+	type target struct {
+		name string
+		wt   worktree
+		ok   bool
+	}
+	resolved := make([]target, len(targets))
+	for i, name := range targets {
+		if name == "" {
+			return "", errors.New("empty target")
+		}
+		wt, ok := findWorktree(wts, base, name)
+		resolved[i] = target{name, wt, ok}
+	}
+
+	cdMain := ""
+	done := map[string]bool{}
+	for _, t := range resolved {
+		name, wt := t.name, t.wt
+		key := "branch " + name
+		if t.ok {
+			key = wt.path
+		}
+		if done[key] {
+			continue
+		}
+		done[key] = true
+
+		if !t.ok {
+			// Run from mainRoot: an earlier target may have removed the current directory.
+			if _, err := git("-C", mainRoot, "show-ref", "--verify", "--quiet", "refs/heads/"+name); err != nil {
+				return cdMain, fmt.Errorf("no worktree or branch found for %q", name)
+			}
+			if slices.Contains(protected, name) {
+				return cdMain, fmt.Errorf("cannot delete protected branch %q (default or main HEAD)", name)
+			}
+			if err := gitLoud("-C", mainRoot, "branch", branchFlag, name); err != nil {
+				return cdMain, fmt.Errorf("failed to delete branch %q", name)
+			}
+			continue
+		}
+
+		isCurrent := samePath(wt.path, current) // before removal, while the path still resolves
+		if err := gitLoud(append(removeArgs, wt.path)...); err != nil {
+			return cdMain, fmt.Errorf("failed to remove worktree %q", name)
+		}
+		if isCurrent {
+			cdMain = mainRoot
+		}
+		_, branchErr := git("-C", mainRoot, "show-ref", "--verify", "--quiet", "refs/heads/"+wt.branch)
+		switch {
+		case wt.branch == "" || branchErr != nil:
+			note("Deleted worktree %s", tilde(wt.path))
+		case slices.Contains(protected, wt.branch):
+			note("Deleted worktree %q (branch is protected, not deleted)", wt.branch)
+		case gitLoud("-C", mainRoot, "branch", branchFlag, wt.branch) != nil:
+			note("Deleted worktree, but kept unmerged branch %q (use -D to force)", wt.branch)
+		default:
+			note("Deleted worktree %q", wt.branch)
+		}
+	}
+	return cdMain, nil
+}
+
+// defaultBranch is origin/HEAD's branch, else init.defaultBranch, else master (as in git-wt).
+func defaultBranch() string {
+	if b, err := git("symbolic-ref", "--short", "refs/remotes/origin/HEAD"); err == nil {
+		return strings.TrimPrefix(b, "origin/")
+	}
+	if b, _ := git("config", "--get", "init.defaultBranch"); b != "" {
+		return b
+	}
+	return "master"
+}
+
+// gitLoud runs git with all output on stderr, keeping stdout for the path.
+func gitLoud(args ...string) error {
+	cmd := exec.Command("git", args...)
+	cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
+	return cmd.Run()
+}
+
+func note(format string, args ...any) {
+	fmt.Fprintf(os.Stderr, format+"\n", args...)
 }
 
 // expandBaseDir resolves git-wt's wt.basedir (default ".wt"): {gitroot} is the
@@ -214,9 +359,7 @@ func createWorktree(name, path, base string) {
 	if branchExists(name) {
 		args = []string{"worktree", "add", path, name} // git sets up tracking for a remote-only branch
 	}
-	cmd := exec.Command("git", args...)
-	cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
-	if err := cmd.Run(); err != nil {
+	if err := gitLoud(args...); err != nil {
 		exitWithStatus(err)
 	}
 
@@ -311,7 +454,7 @@ func within(path, dir string) bool {
 }
 
 func listWorktrees() {
-	rows := collectRows(mustWorktrees(), currentRoot())
+	rows := collectRows(liveWorktrees(), currentRoot())
 	width := 0
 	if w, _, err := term.GetSize(os.Stdout.Fd()); err == nil {
 		width = w
@@ -533,6 +676,11 @@ func fetchPRs() (map[string]pullRequest, string) {
 	return m, ""
 }
 
+// liveWorktrees is mustWorktrees without prunable entries, whose directory is gone.
+func liveWorktrees() []worktree {
+	return slices.DeleteFunc(mustWorktrees(), func(wt worktree) bool { return wt.prunable })
+}
+
 func mustWorktrees() []worktree {
 	cmd := exec.Command("git", "worktree", "list", "--porcelain")
 	cmd.Stderr = os.Stderr
@@ -543,12 +691,12 @@ func mustWorktrees() []worktree {
 	return parseWorktrees(string(out))
 }
 
-// parseWorktrees parses `git worktree list --porcelain`, skipping bare and prunable entries.
+// parseWorktrees parses `git worktree list --porcelain`, skipping the bare entry.
 func parseWorktrees(out string) []worktree {
 	var wts []worktree
 	for _, block := range strings.Split(strings.TrimSpace(out), "\n\n") {
 		var wt worktree
-		skip := false
+		bare := false
 		for _, line := range strings.Split(block, "\n") {
 			key, value, _ := strings.Cut(line, " ")
 			switch key {
@@ -556,11 +704,13 @@ func parseWorktrees(out string) []worktree {
 				wt.path = value
 			case "branch":
 				wt.branch = strings.TrimPrefix(value, "refs/heads/")
-			case "bare", "prunable":
-				skip = true
+			case "prunable":
+				wt.prunable = true
+			case "bare":
+				bare = true
 			}
 		}
-		if wt.path != "" && !skip {
+		if wt.path != "" && !bare {
 			wts = append(wts, wt)
 		}
 	}
