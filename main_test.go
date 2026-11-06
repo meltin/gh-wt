@@ -2,7 +2,10 @@ package main
 
 import (
 	"slices"
+	"strings"
 	"testing"
+
+	"github.com/charmbracelet/x/ansi"
 )
 
 func TestParseWorktrees(t *testing.T) {
@@ -49,5 +52,24 @@ u UU N... 100644 100644 100644 100644 aaa bbb ccc conflict.go
 	want := status{ahead: 2, behind: 1, staged: 3, modified: 2, untracked: 1, conflicts: 1}
 	if got != want {
 		t.Fatalf("got %+v, want %+v", got, want)
+	}
+}
+
+func TestRenderTableFits(t *testing.T) {
+	initStyles()
+	rows := []row{{
+		wt:      worktree{path: "/very/long/" + strings.Repeat("path/", 18), branch: "issue-1783-karte-position-update-missing-constructions"},
+		status:  status{ahead: 2, modified: 3},
+		pr:      &pullRequest{Number: 1720, State: "OPEN", IsDraft: true},
+		when:    "31 hours ago",
+		subject: "fix(最近見た工事): 一覧の見出しと最初の日付見出しの間隔を詰める",
+	}}
+	for _, withPath := range []bool{true, false} {
+		header, lines := renderTable(rows, withPath, 100)
+		for _, l := range append(lines, header) {
+			if w := ansi.StringWidth(l) + 2; w > 100 { // +2 for the mark or cursor
+				t.Errorf("withPath=%v: width %d > 100: %q", withPath, w, ansi.Strip(l))
+			}
+		}
 	}
 }

@@ -7,12 +7,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/huh/spinner"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/charmbracelet/x/term"
 	"github.com/mattn/go-isatty"
 )
 
@@ -111,29 +113,36 @@ func main() {
 }
 
 func selectWorktree() {
+	wts := mustWorktrees()
 	current := currentRoot()
-	var others []worktree
-	for _, wt := range mustWorktrees() {
-		if !samePath(wt.path, current) {
-			others = append(others, wt)
-		}
-	}
-	if len(others) == 0 {
+	if !slices.ContainsFunc(wts, func(wt worktree) bool { return !samePath(wt.path, current) }) {
 		fail("no other worktrees")
 	}
 
-	rows := collectRows(others, current)
-	header, lines := renderTable(rows, false)
-	options := make([]huh.Option[string], len(rows))
+	rows := collectRows(wts, current)
+	width := 0
+	if w, _, err := term.GetSize(os.Stderr.Fd()); err == nil {
+		width = w - 3 // huh's "┃ " border plus a spare cell
+	}
+	header, lines := renderTable(rows, false, width)
+
+	// huh has no disabled options, so the current worktree goes into the
+	// description under the header, where it shows but cannot be selected.
+	description := header
+	var options []huh.Option[string]
 	for i, r := range rows {
-		options[i] = huh.NewOption(lines[i], r.wt.path)
+		if r.current {
+			description += "\n" + grayStyle.Render(iconCurrent+" "+ansi.Strip(lines[i]))
+			continue
+		}
+		options = append(options, huh.NewOption(lines[i], r.wt.path))
 	}
 
 	var selected string
 	err := huh.NewForm(huh.NewGroup(
 		huh.NewSelect[string]().
 			Title("Select a worktree:").
-			Description(header).
+			Description(description).
 			Options(options...).
 			Value(&selected),
 	)).WithOutput(os.Stderr).Run()
@@ -157,10 +166,18 @@ func switchTo(name string) {
 
 func listWorktrees() {
 	rows := collectRows(mustWorktrees(), currentRoot())
-	header, lines := renderTable(rows, true)
+	width := 0
+	if w, _, err := term.GetSize(os.Stdout.Fd()); err == nil {
+		width = w
+	}
+	header, lines := renderTable(rows, true, width)
 	fmt.Println(header)
-	for _, line := range lines {
-		fmt.Println(line)
+	for i, line := range lines {
+		mark := " "
+		if rows[i].current {
+			mark = greenStyle.Render(iconCurrent)
+		}
+		fmt.Println(mark + " " + line)
 	}
 }
 
@@ -213,18 +230,26 @@ func collectRows(wts []worktree, current string) []row {
 	return rows
 }
 
-// renderTable returns a header and one aligned line per row.
-// The list adds a current-worktree mark and a PATH column; the picker omits both
-// (huh draws its own 2-cell cursor where the mark would be).
-func renderTable(rows []row, list bool) (string, []string) {
-	titles := []string{"BRANCH", "STATUS", "PR", "LAST COMMIT"}
-	if list {
+// renderTable aligns rows under a header. The header starts with 2 cells of
+// indent, matching the caller's mark in the list or huh's cursor in the picker;
+// lines are returned without it. With maxWidth > 0 the path, subject and branch
+// columns shrink, in that order, so every line fits.
+func renderTable(rows []row, withPath bool, maxWidth int) (string, []string) {
+	const colBranch, colSubject, colPath = 0, 4, 5
+	titles := []string{"BRANCH", "STATUS", "PR", "LAST COMMIT", ""}
+	if withPath {
 		titles = append(titles, "PATH")
 	}
 	cells := make([][]string, len(rows))
 	for i, r := range rows {
-		cells[i] = []string{branchCell(r.wt, list), statusCell(r.status), prCell(r.pr), commitCell(r.when, r.subject)}
-		if list {
+		cells[i] = []string{
+			branchCell(r.wt, withPath),
+			statusCell(r.status),
+			prCell(r.pr),
+			grayStyle.Render(r.when),
+			ansi.Truncate(r.subject, 50, "…"),
+		}
+		if withPath {
 			cells[i] = append(cells[i], grayStyle.Render(tilde(r.wt.path)))
 		}
 	}
@@ -236,36 +261,48 @@ func renderTable(rows []row, list bool) (string, []string) {
 			widths[c] = max(widths[c], ansi.StringWidth(cs[c]))
 		}
 	}
+	if maxWidth > 0 {
+		over := 2 + 2*(len(widths)-1) - maxWidth
+		for _, w := range widths {
+			over += w
+		}
+		// Shrink to comfortable minimums first, then further if still too wide.
+		for _, s := range []struct{ col, min int }{
+			{colPath, 24}, {colSubject, 30}, {colBranch, 20},
+			{colPath, 8}, {colSubject, 10}, {colBranch, 10},
+		} {
+			if s.col < len(widths) && over > 0 {
+				cut := min(over, max(0, widths[s.col]-s.min))
+				widths[s.col] -= cut
+				over -= cut
+			}
+		}
+	}
+
 	join := func(cs []string) string {
 		var b strings.Builder
 		for c, s := range cs {
 			if c > 0 {
 				b.WriteString("  ")
 			}
+			s = ansi.Truncate(s, widths[c], "…")
 			b.WriteString(s)
 			if c < len(cs)-1 {
 				b.WriteString(strings.Repeat(" ", widths[c]-ansi.StringWidth(s)))
 			}
 		}
-		return b.String()
+		return strings.TrimRight(b.String(), " ")
 	}
 
 	header := make([]string, len(titles))
 	for c, t := range titles {
-		header[c] = underlineStyle.Render(t) + strings.Repeat(" ", widths[c]-len(t))
+		header[c] = underlineStyle.Render(t)
 	}
 	lines := make([]string, len(rows))
 	for i, cs := range cells {
 		lines[i] = join(cs)
-		if list {
-			mark := " "
-			if rows[i].current {
-				mark = greenStyle.Render(iconCurrent)
-			}
-			lines[i] = mark + " " + lines[i]
-		}
 	}
-	return "  " + strings.TrimRight(join(header), " "), lines
+	return "  " + join(header), lines
 }
 
 // branchCell shows the branch, or for a detached worktree its path in the
@@ -313,13 +350,6 @@ func prCell(pr *pullRequest) string {
 		icon, word, style = iconPROpen, "open", greenStyle
 	}
 	return style.Render(fmt.Sprintf("%s #%d %s", icon, pr.Number, word))
-}
-
-func commitCell(when, subject string) string {
-	if when == "" {
-		return ""
-	}
-	return grayStyle.Render(when) + "  " + ansi.Truncate(subject, 50, "…")
 }
 
 // parseStatus counts entries of `git status --porcelain=v2 --branch`.
