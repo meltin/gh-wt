@@ -64,12 +64,10 @@ func TestRenderTableFits(t *testing.T) {
 		when:    "31 hours ago",
 		subject: "fix(最近見た工事): 一覧の見出しと最初の日付見出しの間隔を詰める",
 	}}
-	for _, withPath := range []bool{true, false} {
-		header, lines := renderTable(rows, withPath, 100)
-		for _, l := range append(lines, header) {
-			if w := ansi.StringWidth(l) + 2; w > 100 { // +2 for the mark or cursor
-				t.Errorf("withPath=%v: width %d > 100: %q", withPath, w, ansi.Strip(l))
-			}
+	header, lines := renderTable(rows, 100)
+	for _, l := range append(lines, header) {
+		if w := ansi.StringWidth(l) + 2; w > 100 { // +2 for the mark or cursor
+			t.Errorf("width %d > 100: %q", w, ansi.Strip(l))
 		}
 	}
 }

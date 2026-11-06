@@ -124,7 +124,7 @@ func selectWorktree() {
 	if w, _, err := term.GetSize(os.Stderr.Fd()); err == nil {
 		width = w - 3 // huh's "┃ " border plus a spare cell
 	}
-	header, lines := renderTable(rows, false, width)
+	header, lines := renderTable(rows, width)
 
 	// huh has no disabled options, so the current worktree goes into the
 	// description under the header, where it shows but cannot be selected.
@@ -170,7 +170,7 @@ func listWorktrees() {
 	if w, _, err := term.GetSize(os.Stdout.Fd()); err == nil {
 		width = w
 	}
-	header, lines := renderTable(rows, true, width)
+	header, lines := renderTable(rows, width)
 	fmt.Println(header)
 	for i, line := range lines {
 		mark := " "
@@ -234,23 +234,18 @@ func collectRows(wts []worktree, current string) []row {
 // indent, matching the caller's mark in the list or huh's cursor in the picker;
 // lines are returned without it. With maxWidth > 0 the path, subject and branch
 // columns shrink, in that order, so every line fits.
-func renderTable(rows []row, withPath bool, maxWidth int) (string, []string) {
+func renderTable(rows []row, maxWidth int) (string, []string) {
 	const colBranch, colSubject, colPath = 0, 4, 5
-	titles := []string{"BRANCH", "STATUS", "PR", "LAST COMMIT", ""}
-	if withPath {
-		titles = append(titles, "PATH")
-	}
+	titles := []string{"BRANCH", "STATUS", "PR", "LAST COMMIT", "", "PATH"}
 	cells := make([][]string, len(rows))
 	for i, r := range rows {
 		cells[i] = []string{
-			branchCell(r.wt, withPath),
+			ansi.Truncate(branchCell(r.wt), 28, "…"),
 			statusCell(r.status),
 			prCell(r.pr),
 			grayStyle.Render(r.when),
 			ansi.Truncate(r.subject, 50, "…"),
-		}
-		if withPath {
-			cells[i] = append(cells[i], grayStyle.Render(tilde(r.wt.path)))
+			grayStyle.Render(tilde(r.wt.path)),
 		}
 	}
 
@@ -271,7 +266,7 @@ func renderTable(rows []row, withPath bool, maxWidth int) (string, []string) {
 			{colPath, 24}, {colSubject, 30}, {colBranch, 20},
 			{colPath, 8}, {colSubject, 10}, {colBranch, 10},
 		} {
-			if s.col < len(widths) && over > 0 {
+			if over > 0 {
 				cut := min(over, max(0, widths[s.col]-s.min))
 				widths[s.col] -= cut
 				over -= cut
@@ -305,14 +300,9 @@ func renderTable(rows []row, withPath bool, maxWidth int) (string, []string) {
 	return "  " + join(header), lines
 }
 
-// branchCell shows the branch, or for a detached worktree its path in the
-// picker and "(detached)" in the list, where the path has its own column.
-func branchCell(wt worktree, list bool) string {
-	if wt.branch == "" && list {
-		return grayStyle.Render(iconCommit + " (detached)")
-	}
+func branchCell(wt worktree) string {
 	if wt.branch == "" {
-		return grayStyle.Render(iconCommit + " " + tilde(wt.path))
+		return grayStyle.Render(iconCommit + " (detached)")
 	}
 	return cyanStyle.Render(iconBranch + " " + wt.branch)
 }
