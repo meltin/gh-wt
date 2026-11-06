@@ -58,9 +58,11 @@ gh wt only prints the path. To cd into it, add this to your .zshrc:
 
 // zshInit is printed by `gh wt --init zsh`. gh wt only prints a path, so this
 // function wraps gh to cd into the last line of its output when it's a directory.
+// `function gh` (not `gh()`) still defines it when gh is an alias, and ${1-}
+// keeps it working under setopt nounset.
 const zshInit = `# gh-wt (https://github.com/meltin/gh-wt): cd into the worktree gh wt prints.
-gh() {
-  if [[ $1 == wt && $2 != (-l|--list|-h|--help|--init) ]]; then
+function gh {
+  if [[ ${1-} == wt && ${2-} != (-l|--list|-h|--help|--init) ]]; then
     local out rc last
     out=$(command gh "$@"); rc=$?
     last=${out##*$'\n'}

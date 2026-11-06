@@ -35,7 +35,7 @@ eval "$(gh wt --init zsh)"
 
 Like git-wt's shell integration, the function intercepts every `gh wt` call: when the last line of its output is a directory, it moves there and prints the lines before it. The exit status is passed through, so if a hook fails after creating a worktree you are still moved into it and the status is non-zero. `gh wt -l`, `gh wt --help` and `gh wt --init` run directly, keeping colors and the terminal width. Every other `gh` command runs as usual.
 
-Run `gh wt --init zsh` to read the function. Because it is loaded at shell startup, upgrading gh-wt updates it the next time you open a shell.
+Run `gh wt --init zsh` to read the function. Because it is loaded at shell startup, upgrading gh-wt updates it the next time you open a shell. Put the line after `gh` is on your `PATH`; it replaces any `gh` function defined before it, and works with a `gh` alias and `setopt nounset`.
 
 ## Usage
 
