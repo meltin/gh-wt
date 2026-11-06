@@ -114,12 +114,13 @@ func TestDeleteTargets(t *testing.T) {
 	run("config", "init.defaultBranch", "main")
 	run("commit", "-q", "--allow-empty", "-m", "init")
 	run("worktree", "add", "-q", "-b", "merged", filepath.Join(repo, ".wt/merged"))
+	run("worktree", "add", "-q", "-b", "nest/x", filepath.Join(repo, ".wt/nest/x"))
 	run("worktree", "add", "-q", "-b", "unmerged", filepath.Join(repo, ".wt/unmerged"))
 	run("-C", filepath.Join(repo, ".wt/unmerged"), "commit", "-q", "--allow-empty", "-m", "wip")
 	run("branch", "only-branch")
 	t.Chdir(filepath.Join(repo, ".wt/merged"))
 
-	cd, err := deleteTargets([]string{"merged", "unmerged", "only-branch"}, false)
+	cd, err := deleteTargets([]string{"merged", "unmerged", "only-branch", "nest/x"}, false)
 	if err != nil || cd != repo {
 		t.Fatalf("safe delete: cd=%q err=%v, want cd=%q", cd, err, repo)
 	}
@@ -127,6 +128,9 @@ func TestDeleteTargets(t *testing.T) {
 	branches, _ := git("branch", "--format=%(refname:short)")
 	if branches != "main\nunmerged" {
 		t.Fatalf("after -d, branches = %q, want main and the unmerged branch kept", branches)
+	}
+	if _, err := os.Stat(filepath.Join(repo, ".wt/nest")); !os.IsNotExist(err) {
+		t.Fatal("deleting nest/x should remove the empty .wt/nest")
 	}
 	if len(mustWorktrees()) != 1 {
 		t.Fatalf("worktrees left: %v", mustWorktrees())

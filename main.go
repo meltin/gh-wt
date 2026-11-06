@@ -309,6 +309,7 @@ func deleteTargets(targets []string, force bool) (string, error) {
 		if isCurrent {
 			cdMain = mainRoot
 		}
+		removeEmptyParents(filepath.Dir(wt.path), base) // e.g. "feat/" after deleting feat/x
 		_, branchErr := git("-C", mainRoot, "show-ref", "--verify", "--quiet", "refs/heads/"+wt.branch)
 		switch {
 		case wt.branch == "" || branchErr != nil:
