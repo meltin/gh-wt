@@ -7,6 +7,7 @@ A GitHub CLI extension to switch between git worktrees and see their state at a 
 - `gh wt` shows the other worktrees with their status, PR and last commit, and moves you to the one you pick
 - `gh wt <branch|worktree|path>` moves you to that worktree, creating the worktree (and the branch) if needed
 - `gh wt -l` lists all worktrees
+- `gh wt -p` opens an open pull request's branch as a worktree
 - `gh wt -d <target>...` deletes worktrees and their branches
 - `gh wt -m [<target>] <new-name>` renames a worktree's directory and branch together
 
@@ -49,12 +50,14 @@ USAGE
   gh wt [<branch|worktree|path> [<start-point>]]
   gh wt -b <branch> <worktree> [<start-point>]
   gh wt --orphan [-b <branch>] <worktree>
+  gh wt -p [<number>|<url>|<branch>]
   gh wt -d|-D <branch|worktree|path>...
   gh wt -m|-M [<branch|worktree|path>] <new-name>
   gh wt [flags]
 
 FLAGS
-  -l, --list           List worktrees with status, PR and last commit
+  -l, --list           List worktrees with changes, PR and last commit
+  -p, --pr             Select an open PR, or give one, and open its branch
   -b, --branch NAME    Create with a branch name different from the directory
       --orphan         Create on a new branch with no history
   -d, --delete         Delete worktrees and their branches (safe)
@@ -70,6 +73,8 @@ EXAMPLES
                            # creating the worktree (and branch) if needed
   $ gh wt fix/y main       # Create branch fix/y from main in a new worktree
   $ gh wt -b me/feat feat  # Directory feat, branch me/feat
+  $ gh wt -p               # Select an open PR and open its branch
+  $ gh wt -p 1720          # Open PR #1720's branch (a PR URL works too)
   $ gh wt -l               # List worktrees
   $ gh wt -d feat/x        # Delete the worktree and branch feat/x
   $ gh wt -m feat/y        # Rename the current worktree and branch to feat/y
@@ -101,6 +106,21 @@ A target can be a branch name, a worktree directory name relative to the base di
 `gh wt <name> <start-point>` creates the new branch from `<start-point>` (a branch, tag or commit) instead of `HEAD`, e.g. `gh wt fix/y main` from inside another worktree. A start point that exists only on a remote is used as `<remote>/<start-point>` (with `checkout.defaultRemote` breaking ties between remotes), so the new branch keeps its own name. A start point is refused when the worktree or a local branch named `<name>` already exists.
 
 `gh wt -b <branch> <worktree>` names the directory `<worktree>` and the branch `<branch>`, e.g. `gh wt -b me/feat feat`; either name finds it afterwards. `gh wt --orphan <name>` creates a branch with no history (Git 2.42+) in an empty worktree: no files are copied, hooks still run, and it can't take a start point or an existing branch. Flags may come before or after the names, as in git-wt; `-b` also takes `--branch=NAME` or `-bNAME`, and `--` ends the flags.
+
+## Opening pull requests
+
+`gh wt -p` lists the repository's open pull requests and opens the selected one's branch: like `gh wt <branch>`, it moves to the worktree if there is one and creates it otherwise. `gh wt -p <number>` (or `#<number>`, the PR's URL or its branch) opens a PR directly.
+
+| Column   | Content                                                                         |
+| -------- | ------------------------------------------------------------------------------- |
+| WORKTREE | The worktree's CHANGES if it exists (selecting moves there); empty otherwise     |
+| PR       | Number, green for open and yellow `draft` for drafts                            |
+| TITLE    | PR title, shortened first when the table is wider than the terminal            |
+| BRANCH   | Head branch                                                                     |
+| AUTHOR   | PR author                                                                       |
+| UPDATED  | When the PR was last updated                                                    |
+
+`gh pr checkout --worktree` does the checkout, so the PR opens just as gh opens it: fetched first (plain `gh wt <branch>` doesn't fetch), tracking the PR's branch, an existing branch fast-forwarded (or refused when it can't be), and PRs from forks included; a URL of another repository's PR fetches that PR, as `gh pr checkout <url>` does. gh-wt picks the path under `wt.basedir` and, for a new worktree, copies files and runs `wt.hook`.
 
 ## Deleting worktrees
 

@@ -11,12 +11,14 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/huh/spinner"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/term"
+	"github.com/dustin/go-humanize"
 	"github.com/mattn/go-isatty"
 )
 
@@ -26,12 +28,14 @@ USAGE
   gh wt [<branch|worktree|path> [<start-point>]]
   gh wt -b <branch> <worktree> [<start-point>]
   gh wt --orphan [-b <branch>] <worktree>
+  gh wt -p [<number>|<url>|<branch>]
   gh wt -d|-D <branch|worktree|path>...
   gh wt -m|-M [<branch|worktree|path>] <new-name>
   gh wt [flags]
 
 FLAGS
-  -l, --list           List worktrees with status, PR and last commit
+  -l, --list           List worktrees with changes, PR and last commit
+  -p, --pr             Select an open PR, or give one, and open its branch
   -b, --branch NAME    Create with a branch name different from the directory
       --orphan         Create on a new branch with no history
   -d, --delete         Delete worktrees and their branches (safe)
@@ -47,6 +51,8 @@ EXAMPLES
                            # creating the worktree (and branch) if needed
   $ gh wt fix/y main       # Create branch fix/y from main in a new worktree
   $ gh wt -b me/feat feat  # Directory feat, branch me/feat
+  $ gh wt -p               # Select an open PR and open its branch
+  $ gh wt -p 1720          # Open PR #1720's branch (a PR URL works too)
   $ gh wt -l               # List worktrees
   $ gh wt -d feat/x        # Delete the worktree and branch feat/x
   $ gh wt -m feat/y        # Rename the current worktree and branch to feat/y
@@ -122,6 +128,15 @@ type pullRequest struct {
 	HeadRepository    struct {
 		NameWithOwner string `json:"nameWithOwner"`
 	} `json:"headRepository"`
+	// Only for gh wt -p.
+	HeadRepositoryOwner struct {
+		Login string `json:"login"`
+	} `json:"headRepositoryOwner"`
+	Title     string    `json:"title"`
+	UpdatedAt time.Time `json:"updatedAt"`
+	Author    struct {
+		Login string `json:"login"`
+	} `json:"author"`
 }
 
 type status struct {
@@ -139,8 +154,8 @@ type row struct {
 
 func main() {
 	args := os.Args[1:]
-	if len(args) == 0 {
-		// stdout is captured by the shell function, so draw on stderr
+	if len(args) == 0 || (len(args) == 1 && (args[0] == "-p" || args[0] == "--pr")) {
+		// stdout is captured by the shell function, so draw pickers on stderr
 		// and let lipgloss detect colors from stderr too.
 		lipgloss.SetDefaultRenderer(lipgloss.NewRenderer(os.Stderr))
 	}
@@ -172,6 +187,16 @@ func main() {
 		}
 		if err != nil {
 			fail(err.Error())
+		}
+	case args[0] == "-p" || args[0] == "--pr":
+		rejectFlags(args[1:], args[0])
+		switch len(args) {
+		case 1:
+			selectPR()
+		case 2:
+			openPR(args[1])
+		default:
+			fail("usage: gh wt -p [<number>|<url>|<branch>]")
 		}
 	case args[0] == "-m" || args[0] == "--move" || args[0] == "-M" || args[0] == "--force-move":
 		if len(args) < 2 || len(args) > 3 {
@@ -232,7 +257,7 @@ func createOrSwitch(args []string) {
 			orphan = true
 		case a == "-l" || a == "--list":
 			fail(fmt.Sprintf("%s takes no other arguments", a))
-		case slices.Contains([]string{"-d", "--delete", "-D", "--force-delete", "-m", "--move", "-M", "--force-move"}, a):
+		case slices.Contains([]string{"-d", "--delete", "-D", "--force-delete", "-m", "--move", "-M", "--force-move", "-p", "--pr"}, a):
 			fail(fmt.Sprintf("%s must come first and can't be combined with -b or --orphan", a))
 		default:
 			fail(fmt.Sprintf("unknown flag: %s", a))
@@ -481,6 +506,173 @@ func leaveIfGone(cd, wd, mainRoot string) string {
 	return cd
 }
 
+// selectPR lists the open PRs and opens the selected one in a worktree.
+func selectPR() {
+	var prs []pullRequest
+	var prErr, def string
+	var defErr error
+	load := func() {
+		if prs, prErr = openPRs(); prErr == "" && slices.ContainsFunc(prs, func(pr pullRequest) bool { return pr.IsCrossRepository }) {
+			def, defErr = repoDefaultBranch()
+		}
+	}
+	if isatty.IsTerminal(os.Stderr.Fd()) {
+		_ = spinner.New().Title("Loading pull requests...").Output(os.Stderr).Action(load).Run()
+	} else {
+		load()
+	}
+	if prErr != "" {
+		fail(prErr)
+	}
+	if defErr != nil {
+		exitWithStatus(defErr) // gh already said why
+	}
+	if len(prs) == 0 {
+		fail("no open pull requests")
+	}
+
+	width := 0
+	if w, _, err := term.GetSize(os.Stderr.Fd()); err == nil {
+		width = w - 3 // huh's "┃ " border plus a spare cell
+	}
+	header, lines := renderPRTable(prs, liveWorktrees(), def, width)
+	options := make([]huh.Option[int], len(prs))
+	for i := range prs {
+		options[i] = huh.NewOption(lines[i], i)
+	}
+	var selected int
+	err := huh.NewForm(huh.NewGroup(
+		huh.NewSelect[int]().
+			Title("Select a pull request:").
+			Description(header).
+			Options(options...).
+			Value(&selected),
+	)).WithOutput(os.Stderr).Run()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, grayStyle.Render("Operation cancelled."))
+		os.Exit(1)
+	}
+	openPR(strconv.Itoa(prs[selected].Number))
+}
+
+// renderPRTable lays out PRs with the worktree's CHANGES when one exists, so
+// it's clear whether selecting moves to it or creates it.
+func renderPRTable(prs []pullRequest, wts []worktree, def string, maxWidth int) (string, []string) {
+	const colTitle, colBranch = 2, 3
+	cells := make([][]string, len(prs))
+	for i, pr := range prs {
+		changes := ""
+		name := prBranch(pr, def)
+		if j := slices.IndexFunc(wts, func(wt worktree) bool { return wt.branch == name }); j >= 0 {
+			var s status
+			if out, err := git("--no-optional-locks", "-C", wts[j].path, "status", "--porcelain=v2", "--branch"); err == nil {
+				s = parseStatus(out)
+			}
+			n, known := prBehind(wts[j].path, pr.HeadRefOid)
+			s.behind, s.remoteNew = max(s.behind, n), !known
+			changes = statusCell(s)
+		}
+		number := greenStyle.Render(fmt.Sprintf("#%d", pr.Number))
+		if pr.IsDraft {
+			number = yellowStyle.Render(fmt.Sprintf("#%d draft", pr.Number))
+		}
+		cells[i] = []string{
+			changes,
+			number,
+			pr.Title,
+			ansi.Truncate(cyanStyle.Render(iconBranch+" "+pr.HeadRefName), 28, "…"),
+			grayStyle.Render(pr.Author.Login),
+			grayStyle.Render(humanize.Time(pr.UpdatedAt)),
+		}
+	}
+	return layoutTable([]string{"WORKTREE", "PR", "TITLE", "BRANCH", "AUTHOR", "UPDATED"}, cells, maxWidth, []shrinkStep{
+		{colTitle, 30}, {colBranch, 20}, {colTitle, 10}, {colBranch, 10},
+	})
+}
+
+// openPRs returns the repository's open PRs, including ones from forks.
+func openPRs() ([]pullRequest, string) {
+	cmd := exec.Command("gh", "pr", "list", "--limit", "100", "--json", "number,title,headRefName,headRefOid,headRepositoryOwner,isDraft,isCrossRepository,author,updatedAt")
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, strings.TrimSpace(stderr.String())
+	}
+	var prs []pullRequest
+	if err := json.Unmarshal(out, &prs); err != nil {
+		return nil, err.Error()
+	}
+	return prs, ""
+}
+
+// openPR opens the PR given as a number, URL or branch (anything gh pr
+// checkout takes) in a worktree under wt.basedir. gh pr checkout --worktree
+// fetches it, including from forks, and creates the worktree or brings an
+// existing one up to date; gh-wt only picks the path and, for a new worktree,
+// copies files and runs wt.hook.
+func openPR(arg string) {
+	arg = strings.TrimPrefix(arg, "#")
+	cmd := exec.Command("gh", "pr", "view", arg, "--json", "number,headRefName,headRepositoryOwner,isCrossRepository")
+	cmd.Stdin, cmd.Stderr = os.Stdin, os.Stderr
+	out, err := cmd.Output()
+	if err != nil {
+		exitWithStatus(err)
+	}
+	var pr pullRequest
+	if err := json.Unmarshal(out, &pr); err != nil {
+		fail(err.Error())
+	}
+	def := ""
+	if pr.IsCrossRepository {
+		if def, err = repoDefaultBranch(); err != nil {
+			exitWithStatus(err)
+		}
+	}
+	name := prBranch(pr, def)
+	_, base := repoBase()
+	path, reuse := filepath.Join(base, name), false
+	if wt, ok := findWorktree(liveWorktrees(), base, name); ok {
+		if wt.branch != name { // gh would switch that worktree to the PR's branch
+			fail(fmt.Sprintf("worktree %s (%s) already exists", tilde(wt.path), label(wt)))
+		}
+		path, reuse = wt.path, true
+	}
+	src := currentRoot()
+	args := []string{"pr", "checkout", arg, "--branch", name}
+	if !reuse || !samePath(path, src) { // gh checks out the current worktree only without --worktree
+		args = append(args, "--worktree", path)
+	}
+	cmd = exec.Command("gh", args...)
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stderr, os.Stderr
+	if err := cmd.Run(); err != nil {
+		exitWithStatus(err)
+	}
+	if reuse {
+		fmt.Println(path)
+		return
+	}
+	setUpWorktree(src, path, base)
+}
+
+// prBranch is the local branch gh pr checkout uses for the PR: its head branch,
+// or <owner>/<branch> for a fork's branch named like the repository's default
+// branch def (as gh gets it from GitHub), so it doesn't collide with ours.
+func prBranch(pr pullRequest, def string) string {
+	if pr.IsCrossRepository && pr.HeadRefName == def {
+		return pr.HeadRepositoryOwner.Login + "/" + pr.HeadRefName
+	}
+	return pr.HeadRefName
+}
+
+// repoDefaultBranch is the repository's default branch on GitHub.
+func repoDefaultBranch() (string, error) {
+	cmd := exec.Command("gh", "repo", "view", "--json", "defaultBranchRef", "--jq", ".defaultBranchRef.name")
+	cmd.Stderr = os.Stderr
+	out, err := cmd.Output()
+	return strings.TrimSpace(string(out)), err
+}
+
 // renameWorktree moves a linked worktree to <base>/<newName> and renames its
 // branch to newName, like git-wt's -m (safe) and -M (overwrite an existing
 // branch, move a locked worktree). old is empty for the current worktree.
@@ -701,8 +893,16 @@ func createWorktree(name, path, base, startPoint string, orphan bool) {
 	if err := gitLoud(args...); err != nil {
 		exitWithStatus(err)
 	}
+	if orphan { // an orphan worktree starts empty, as in git-wt
+		src = ""
+	}
+	setUpWorktree(src, path, base)
+}
 
-	if src != "" && !orphan { // an orphan worktree starts empty, as in git-wt
+// setUpWorktree copies files from the src worktree (if any) into the new
+// worktree at path, runs wt.hook there and prints the path.
+func setUpWorktree(src, path, base string) {
+	if src != "" {
 		copyFiles(src, path, base)
 	}
 
@@ -902,7 +1102,19 @@ func renderTable(rows []row, maxWidth int) (string, []string) {
 			grayStyle.Render(tilde(r.wt.path)),
 		}
 	}
+	return layoutTable(titles, cells, maxWidth, []shrinkStep{
+		{colPath, 24}, {colSubject, 30}, {colBranch, 20},
+		{colPath, 8}, {colSubject, 10}, {colBranch, 10},
+	})
+}
 
+// shrinkStep narrows column col down to min cells while the table is too wide.
+type shrinkStep struct{ col, min int }
+
+// layoutTable aligns cells under underlined titles. The header starts with 2
+// cells of indent, matching the caller's mark or huh's cursor; lines are
+// returned without it. With maxWidth > 0 the shrink steps apply in order.
+func layoutTable(titles []string, cells [][]string, maxWidth int, shrink []shrinkStep) (string, []string) {
 	widths := make([]int, len(titles))
 	for c, t := range titles {
 		widths[c] = len(t)
@@ -915,11 +1127,7 @@ func renderTable(rows []row, maxWidth int) (string, []string) {
 		for _, w := range widths {
 			over += w
 		}
-		// Shrink to comfortable minimums first, then further if still too wide.
-		for _, s := range []struct{ col, min int }{
-			{colPath, 24}, {colSubject, 30}, {colBranch, 20},
-			{colPath, 8}, {colSubject, 10}, {colBranch, 10},
-		} {
+		for _, s := range shrink {
 			if over > 0 {
 				cut := min(over, max(0, widths[s.col]-s.min))
 				widths[s.col] -= cut
@@ -947,7 +1155,7 @@ func renderTable(rows []row, maxWidth int) (string, []string) {
 	for c, t := range titles {
 		header[c] = underlineStyle.Render(t)
 	}
-	lines := make([]string, len(rows))
+	lines := make([]string, len(cells))
 	for i, cs := range cells {
 		lines[i] = join(cs)
 	}

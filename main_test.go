@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/x/ansi"
 )
@@ -730,5 +731,47 @@ func TestPRBehindNoLazyFetch(t *testing.T) {
 	check.Env = append(os.Environ(), "GIT_NO_LAZY_FETCH=1") // checking must not fetch either
 	if err := check.Run(); err == nil {
 		t.Fatal("prBehind fetched the PR head into the partial clone")
+	}
+}
+
+func TestPRBranch(t *testing.T) {
+	pr := func(head string, cross bool) pullRequest {
+		p := pullRequest{HeadRefName: head, IsCrossRepository: cross}
+		p.HeadRepositoryOwner.Login = "someone"
+		return p
+	}
+	for _, c := range []struct {
+		pr   pullRequest
+		want string
+	}{
+		{pr("feat", false), "feat"},
+		{pr("feat", true), "feat"},
+		{pr("main", false), "main"},
+		{pr("main", true), "someone/main"},
+	} {
+		if got := prBranch(c.pr, "main"); got != c.want {
+			t.Errorf("prBranch(%+v) = %q, want %q", c.pr, got, c.want)
+		}
+	}
+}
+
+func TestRenderPRTableFits(t *testing.T) {
+	initStyles()
+	prs := []pullRequest{{
+		Number:      1720,
+		IsDraft:     true,
+		HeadRefName: "fix/" + strings.Repeat("long-branch-", 6),
+		Title:       "docs(e2e): GitHubでの停止理由とローカル実行手順を記載し、" + strings.Repeat("長い説明", 10),
+		UpdatedAt:   time.Now().Add(-3 * 24 * time.Hour),
+	}}
+	prs[0].Author.Login = "someone"
+	header, lines := renderPRTable(prs, nil, "main", 100)
+	for _, l := range append(lines, header) {
+		if w := ansi.StringWidth(l) + 2; w > 100 {
+			t.Errorf("width %d > 100: %q", w, ansi.Strip(l))
+		}
+	}
+	if !strings.Contains(ansi.Strip(lines[0]), "#1720 draft") {
+		t.Errorf("draft PR should say so: %q", ansi.Strip(lines[0]))
 	}
 }
