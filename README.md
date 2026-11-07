@@ -31,7 +31,7 @@ Targets are matched in that order: a branch first, then a directory under `wt.ba
 > [!NOTE]
 > gh-wt has no subcommands. The first non-flag argument is always a target name, never a command, so `gh wt list` creates a worktree named `list` instead of listing anything. Run `gh wt -l` to list worktrees.
 
-gh-wt follows [k1LoW/git-wt](https://github.com/k1LoW/git-wt): the same flags, the same `wt.*` git config keys and the same behaviour, built on `git` and `gh` alone. Where git or gh already does something, gh-wt runs it and shows its output as is.
+gh-wt follows [k1LoW/git-wt](https://github.com/k1LoW/git-wt): the same target rules, the same `wt.*` git config keys (except [these](#not-supported-yet)) and the same behaviour for the operations it has, built on `git` and `gh` alone. Where git or gh already does something, gh-wt runs it and shows its output as is.
 
 ### Listing worktrees
 
@@ -41,7 +41,7 @@ gh-wt follows [k1LoW/git-wt](https://github.com/k1LoW/git-wt): the same flags, t
 | ----------- | --------------------------------------------------------------------------------------- |
 | BRANCH      | Branch name (up to 28 cells), or `(detached)`                                           |
 | CHANGES     | `↑` ahead / `↓` behind upstream, `!` conflicts, `+` staged, `~` modified, `?` untracked |
-| PR          | Number and state (open / draft / merged / closed) of the newest PR for the branch       |
+| PR          | Number and state (open / draft / merged / closed) of the branch's PR, an open one first |
 | LAST COMMIT | Subject and relative time                                                               |
 | PATH        | Worktree path, `~` for home                                                             |
 
@@ -61,7 +61,7 @@ Give a start point to create the new branch from somewhere other than `HEAD`:
 $ gh wt fix/y main
 ```
 
-A start point that exists only on a remote is used as `<remote>/<start-point>` (`checkout.defaultRemote` picks between remotes), so the new branch keeps its own name.
+A start point that exists only on a remote is used as `<remote>/<start-point>` (`checkout.defaultRemote` picks between remotes), so the new branch keeps its own name. A start point only applies to a new branch: it is refused when the worktree or the local branch already exists.
 
 Use `-b`/`--branch` to give the branch a different name from the worktree directory:
 
@@ -125,7 +125,7 @@ When deleting, the same target types apply: `gh wt -d feature-branch`, `gh wt -d
 
 `-D` skips both checks and removes the worktree together with its branch.
 
-- A target with no worktree but a local branch deletes just the branch.
+- A target with no worktree but a local branch deletes just the branch (except a protected one, see below).
 - A worktree whose directory was already removed is cleaned up as well.
 - Parent directories left empty under `wt.basedir` (e.g. `feat/` after deleting `feat/x`) are removed.
 - When the current worktree is deleted, the shell integration moves you to the main repository.
@@ -143,12 +143,13 @@ $ gh wt -m old-name new-name        # rename worktree "old-name" to "new-name"
 - The branch is renamed first, so git refuses invalid or conflicting names before anything on disk changes. If the directory then fails to move, the branch is renamed back.
 - An existing destination, or a destination inside another worktree, stops the rename.
 - `-M` overwrites an existing branch of the new name and moves a locked worktree.
+- Parent directories left empty under `wt.basedir` (e.g. `feat/` after renaming `feat/x`) are removed.
 
 When invoked through the shell integration on the current worktree, the shell function `cd`s to the new path (the same way `-d` returns to the main repository after deleting the current worktree).
 
 > [!NOTE]
 > The default branch and the branch the main repository's `HEAD` points to are protected.
-> - `-d` removes their worktrees but keeps the branches.
+> - `-d`/`-D` remove their worktrees but keep the branches, and refuse a branch that has no worktree.
 > - `-m`/`-M` refuses to rename them.
 > - The main working tree and detached worktrees can't be renamed either.
 >
@@ -181,7 +182,7 @@ $ git -C "$WT" status
 ```
 
 - The exit status is passed through. If a hook fails after creating a worktree, you are still moved into it and the status is non-zero.
-- `gh wt -l`, `gh wt --help` and `gh wt --init` run directly, keeping colors and the terminal width.
+- `gh wt -l`, `gh wt -h`/`--help` and `gh wt --init` run directly, keeping colors and the terminal width.
 - Put the line after `gh` is on your `PATH`. It replaces any `gh` function defined before it, and works with a `gh` alias and `setopt nounset`.
 - Upgrading gh-wt updates the function the next time you open a shell. Run `gh wt --init zsh` to read it.
 

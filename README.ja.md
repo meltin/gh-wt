@@ -12,7 +12,7 @@ $ gh wt -l                           # worktree を一覧表示する
 $ gh wt <branch|worktree|path>       # worktree に移動する（なければ worktree とブランチを作る）
 $ gh wt <branch> <start-point>       # <start-point> から新しいブランチを作り、worktree を作る
 $ gh wt -b <branch> <worktree>       # ディレクトリ名と違う名前のブランチで worktree を作る
-$ gh wt --orphan <branch|worktree>   # 履歴のない新しいブランチで worktree を作る
+$ gh wt --orphan <branch|worktree>   # 履歴のない新しいブランチ（orphan ブランチ）で worktree を作る
 $ gh wt -p                           # 開いている pull request を選び、worktree で開く
 $ gh wt -p <number|url|branch>       # 指定した pull request を worktree で開く
 $ gh wt -d <branch|worktree|path>... # worktree とブランチを削除する（安全）
@@ -31,7 +31,7 @@ $ gh wt -M [<old>] <new>             # 強制的に名前を変える（既存�
 > [!NOTE]
 > gh-wt にサブコマンドはありません。フラグでない最初の引数は、常に対象の名前として扱います。そのため `gh wt list` は一覧を出さず、`list` という worktree を作ります。一覧を見るときは `gh wt -l` を使ってください。
 
-gh-wt は [k1LoW/git-wt](https://github.com/k1LoW/git-wt) にならっています。フラグ、`wt.*` の git config キー、挙動は git-wt と同じで、`git` と `gh` だけで動きます。git や gh にすでにある機能は、それをそのまま実行し、出力もそのまま表示します。
+gh-wt は [k1LoW/git-wt](https://github.com/k1LoW/git-wt) にならっています。対象の指定方法、`wt.*` の git config キー（[未対応のもの](#未対応の設定)を除く）、gh-wt にある操作の挙動は git-wt と同じで、`git` と `gh` だけで動きます。git や gh にすでにある機能は、それをそのまま実行し、出力もそのまま表示します。
 
 ### worktree の一覧
 
@@ -41,8 +41,8 @@ gh-wt は [k1LoW/git-wt](https://github.com/k1LoW/git-wt) にならっていま�
 | ----------- | ----------------------------------------------------------------------------------------------------- |
 | BRANCH      | ブランチ名（最大 28 セル）、または `(detached)`                                                       |
 | CHANGES     | upstream より `↑` 進んでいる / `↓` 遅れているコミット数、`!` 衝突、`+` ステージ済み、`~` 変更、`?` 未追跡 |
-| PR          | そのブランチの最新の PR の番号と状態（open / draft / merged / closed）                                |
-| LAST COMMIT | 最後のコミットの件名と、何日前か                                                                      |
+| PR          | そのブランチの PR の番号と状態（open / draft / merged / closed）。開いている PR を優先                 |
+| LAST COMMIT | 最後のコミットの件名と、どれくらい前か                                                                      |
 | PATH        | worktree のパス。ホームは `~` で表示                                                                  |
 
 - 開いている PR があるブランチでは、PR に push されたのに worktree にまだないコミットも、fetch せずに `↓` に数えます。`↓N` は、そうしたコミットがあるものの、まだ fetch していないので数えられないことを表します。
@@ -61,7 +61,7 @@ gh-wt は [k1LoW/git-wt](https://github.com/k1LoW/git-wt) にならっていま�
 $ gh wt fix/y main
 ```
 
-リモートにしかない開始点は `<remote>/<start-point>` として使います（複数のリモートにあるときは `checkout.defaultRemote` で選びます）。そのため、新しいブランチは指定した名前のままになります。
+リモートにしかない開始点は `<remote>/<start-point>` として使います（複数のリモートにあるときは `checkout.defaultRemote` で選びます）。そのため、新しいブランチは指定した名前のままになります。開始点は新しいブランチにだけ使えます。worktree やローカルブランチがすでにあるときは拒否します。
 
 ブランチ名を worktree のディレクトリ名と変えたいときは、`-b`/`--branch` を使います。
 
@@ -125,7 +125,7 @@ gh-wt が加えるのは、`wt.basedir` の下のパスを決めることと、�
 
 `-D` は両方の確認を飛ばし、worktree とブランチをまとめて削除します。
 
-- worktree がなくローカルブランチだけがある対象は、ブランチだけを削除します。
+- worktree がなくローカルブランチだけがある対象は、ブランチだけを削除します（保護されたブランチは除きます。下の NOTE を参照）。
 - ディレクトリがすでに消えている worktree も片付けます。
 - `wt.basedir` の下で空になった親ディレクトリ（例: `feat/x` を消したあとの `feat/`）も削除します。
 - 現在の worktree を削除したときは、シェル連携がメインのリポジトリへ移動します。
@@ -143,12 +143,13 @@ $ gh wt -m old-name new-name        # worktree "old-name" を "new-name" にす�
 - 先にブランチの名前を変えます。不正な名前や衝突する名前は、ディスク上の何かを変える前に git が拒否します。そのあとディレクトリの移動に失敗したときは、ブランチの名前を元に戻します。
 - 移動先がすでにあるときや、移動先が別の worktree の中になるときは、名前を変えません。
 - `-M` は、新しい名前の既存ブランチを上書きし、ロックされた worktree も移動します。
+- `wt.basedir` の下で空になった親ディレクトリ（例: `feat/x` の名前を変えたあとの `feat/`）は削除します。
 
 現在の worktree の名前をシェル連携から変えたときは、シェル関数が新しいパスへ `cd` します（`-d` で現在の worktree を削除したときに、メインのリポジトリへ戻るのと同じ仕組みです）。
 
 > [!NOTE]
 > 既定ブランチと、メインのリポジトリの `HEAD` が指すブランチは保護されています。
-> - `-d` は、それらの worktree は削除しますが、ブランチは残します。
+> - `-d`/`-D` は、それらの worktree は削除しますが、ブランチは残します。worktree のないブランチを指定したときは拒否します。
 > - `-m`/`-M` は、それらの名前を変えません。
 > - メインの作業ツリーと、detached の worktree も名前を変えられません。
 >
@@ -181,7 +182,7 @@ $ git -C "$WT" status
 ```
 
 - 終了コードはそのまま返します。worktree を作ったあとに hook が失敗したときも、worktree へは移動し、終了コードは 0 以外になります。
-- `gh wt -l`、`gh wt --help`、`gh wt --init` はラッパーを通さずに実行するので、色や端末の幅がそのまま使われます。
+- `gh wt -l`、`gh wt -h`/`--help`、`gh wt --init` はラッパーを通さずに実行するので、色や端末の幅がそのまま使われます。
 - この 1 行は、`gh` に PATH が通ったあとに置いてください。それより前に定義した `gh` 関数は置き換えます。`gh` のエイリアスがあっても、`setopt nounset` でも動きます。
 - gh-wt を更新すると、次にシェルを開いたときに関数も新しくなります。中身は `gh wt --init zsh` で確認できます。
 
