@@ -510,12 +510,10 @@ func leaveIfGone(cd, wd, mainRoot string) string {
 func selectPR() {
 	var prs []pullRequest
 	var prErr, def string
+	var defErr error
 	load := func() {
 		if prs, prErr = openPRs(); prErr == "" && slices.ContainsFunc(prs, func(pr pullRequest) bool { return pr.IsCrossRepository }) {
-			var err error
-			if def, err = repoDefaultBranch(); err != nil {
-				prErr = err.Error()
-			}
+			def, defErr = repoDefaultBranch()
 		}
 	}
 	if isatty.IsTerminal(os.Stderr.Fd()) {
@@ -525,6 +523,9 @@ func selectPR() {
 	}
 	if prErr != "" {
 		fail(prErr)
+	}
+	if defErr != nil {
+		exitWithStatus(defErr) // gh already said why
 	}
 	if len(prs) == 0 {
 		fail("no open pull requests")
