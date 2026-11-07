@@ -754,7 +754,10 @@ func renameWorktree(old []string, newName string, force bool) (string, error) {
 			if created != "" {
 				removeEmptyParents(filepath.Dir(newPath), filepath.Dir(created))
 			}
-			return "", undoBranchRename(mainRoot, src.branch, newName, renamesBranch, overwritten)
+			if !renamesBranch {
+				return "", err // git (or MkdirAll) says why
+			}
+			return "", undoBranchRename(mainRoot, src.branch, newName, overwritten)
 		}
 		removeEmptyParents(filepath.Dir(src.path), base) // e.g. "feat/" after renaming feat/x
 	}
@@ -775,10 +778,7 @@ func renameWorktree(old []string, newName string, force bool) (string, error) {
 // undoBranchRename restores the branch name after the worktree failed to move
 // and builds the error describing the state left behind.
 // overwritten is the commit newName pointed to before -M replaced it, if any.
-func undoBranchRename(mainRoot, oldName, newName string, renamed bool, overwritten string) error {
-	if !renamed {
-		return fmt.Errorf("failed to move worktree %q", oldName)
-	}
+func undoBranchRename(mainRoot, oldName, newName, overwritten string) error {
 	if _, err := git("-C", mainRoot, "branch", "-m", "--", newName, oldName); err != nil {
 		if overwritten != "" {
 			return fmt.Errorf("failed to move worktree; the branch is now %q and could not be renamed back to %q (the overwritten %q was at %s)", newName, oldName, newName, overwritten)
@@ -1373,11 +1373,12 @@ func fail(msg string) {
 	os.Exit(1)
 }
 
-// exitWithStatus exits with a failed command's status (it already said why),
-// or reports any other error.
+// exitWithStatus exits with a failed command's status, showing what it said
+// if that was captured rather than printed, or reports any other error.
 func exitWithStatus(err error) {
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) {
+		os.Stderr.Write(exitErr.Stderr)
 		os.Exit(exitErr.ExitCode())
 	}
 	fail(err.Error())
