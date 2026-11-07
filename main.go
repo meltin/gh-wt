@@ -628,9 +628,17 @@ func openPRBranch(pr pullRequest) {
 		fail(fmt.Sprintf("PR #%d's branch is in another fork (%s), which gh wt -p doesn't support yet", pr.Number, pr.HeadRepository.NameWithOwner))
 	}
 	b := pr.HeadRefName
-	// An explicit refspec, so a tag of the same name or a single-branch clone's
-	// narrow fetch refspec can't leave origin/<branch> missing.
-	if err := gitLoud("fetch", "origin", "+refs/heads/"+b+":refs/remotes/origin/"+b); err != nil {
+	refspec := "+refs/heads/" + b + ":refs/remotes/origin/" + b
+	// A shallow or single-branch clone fetches only its own branch: add this one,
+	// so origin/<branch> stays a tracking branch git can set as upstream.
+	fetch, _ := git("config", "--get-all", "remote.origin.fetch")
+	if lines := strings.Split(fetch, "\n"); !slices.Contains(lines, "+refs/heads/*:refs/remotes/origin/*") && !slices.Contains(lines, refspec) {
+		if err := gitLoud("remote", "set-branches", "--add", "origin", b); err != nil {
+			exitWithStatus(err)
+		}
+	}
+	// An explicit refspec, so a tag of the same name can't stand in for the branch.
+	if err := gitLoud("fetch", "origin", refspec); err != nil {
 		fail(fmt.Sprintf("failed to fetch %q for PR #%d", b, pr.Number))
 	}
 	if _, err := git("show-ref", "--verify", "--quiet", "refs/heads/"+b); err == nil {
@@ -640,14 +648,7 @@ func openPRBranch(pr pullRequest) {
 		switchTo(b, b, "", false)
 		return
 	}
-	// Set the upstream up front: git only does so itself when origin's fetch
-	// refspec covers the branch.
-	for _, kv := range [][2]string{{"remote", "origin"}, {"merge", "refs/heads/" + b}} {
-		if _, err := git("config", "branch."+b+"."+kv[0], kv[1]); err != nil {
-			fail(err.Error())
-		}
-	}
-	switchTo(b, b, "origin/"+b, false)
+	switchTo(b, b, "origin/"+b, false) // git sets origin/<branch> as the upstream
 }
 
 // prNumber reads a PR number from "123", "#123" or a .../pull/123 URL.
