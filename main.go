@@ -186,7 +186,7 @@ func main() {
 			fmt.Println(dir) // the current worktree is gone; let the shell function cd out
 		}
 		if err != nil {
-			fail(err.Error())
+			exitWithStatus(err)
 		}
 	case args[0] == "-p" || args[0] == "--pr":
 		rejectFlags(args[1:], args[0])
@@ -205,7 +205,7 @@ func main() {
 		rejectFlags(args[1:], args[0])
 		dir, err := renameWorktree(args[1:len(args)-1], args[len(args)-1], args[0] == "-M" || args[0] == "--force-move")
 		if err != nil {
-			fail(err.Error())
+			exitWithStatus(err)
 		}
 		if dir != "" {
 			fmt.Println(dir) // the current worktree moved; let the shell function follow it
@@ -468,14 +468,14 @@ func deleteTargets(targets []string, force bool) (cd string, err error) {
 				return cdMain, fmt.Errorf("cannot delete protected branch %q (default or main HEAD)", name)
 			}
 			if err := gitLoud("-C", mainRoot, "branch", branchFlag, name); err != nil {
-				return cdMain, fmt.Errorf("failed to delete branch %q", name)
+				return cdMain, err
 			}
 			continue
 		}
 
 		isCurrent := samePath(wt.path, current) // before removal, while the path still resolves
 		if err := gitLoud(append(removeArgs, wt.path)...); err != nil {
-			return cdMain, fmt.Errorf("failed to remove worktree %q", name)
+			return cdMain, err
 		}
 		if isCurrent {
 			cdMain = mainRoot
@@ -487,8 +487,8 @@ func deleteTargets(targets []string, force bool) (cd string, err error) {
 			note("Deleted worktree %s", tilde(wt.path))
 		case slices.Contains(protected, wt.branch):
 			note("Deleted worktree %q (branch is protected, not deleted)", wt.branch)
-		case gitLoud("-C", mainRoot, "branch", branchFlag, wt.branch) != nil:
-			note("Deleted worktree, but kept unmerged branch %q (use -D to force)", wt.branch)
+		case gitLoud("-C", mainRoot, "branch", branchFlag, wt.branch) != nil: // git says why it kept the branch
+			note("Deleted worktree %s", tilde(wt.path))
 		default:
 			note("Deleted worktree %q", wt.branch)
 		}
@@ -733,7 +733,7 @@ func renameWorktree(old []string, newName string, force bool) (string, error) {
 			flag = "-M"
 		}
 		if err := gitLoud("-C", mainRoot, "branch", flag, "--", src.branch, newName); err != nil {
-			return "", fmt.Errorf("failed to rename branch %q", src.branch)
+			return "", err
 		}
 	}
 	if movesDir {
@@ -754,7 +754,10 @@ func renameWorktree(old []string, newName string, force bool) (string, error) {
 			if created != "" {
 				removeEmptyParents(filepath.Dir(newPath), filepath.Dir(created))
 			}
-			return "", undoBranchRename(mainRoot, src.branch, newName, renamesBranch, overwritten)
+			if !renamesBranch {
+				return "", err // git (or MkdirAll) says why
+			}
+			return "", undoBranchRename(mainRoot, src.branch, newName, overwritten)
 		}
 		removeEmptyParents(filepath.Dir(src.path), base) // e.g. "feat/" after renaming feat/x
 	}
@@ -775,10 +778,7 @@ func renameWorktree(old []string, newName string, force bool) (string, error) {
 // undoBranchRename restores the branch name after the worktree failed to move
 // and builds the error describing the state left behind.
 // overwritten is the commit newName pointed to before -M replaced it, if any.
-func undoBranchRename(mainRoot, oldName, newName string, renamed bool, overwritten string) error {
-	if !renamed {
-		return fmt.Errorf("failed to move worktree %q", oldName)
-	}
+func undoBranchRename(mainRoot, oldName, newName, overwritten string) error {
 	if _, err := git("-C", mainRoot, "branch", "-m", "--", newName, oldName); err != nil {
 		if overwritten != "" {
 			return fmt.Errorf("failed to move worktree; the branch is now %q and could not be renamed back to %q (the overwritten %q was at %s)", newName, oldName, newName, overwritten)
@@ -871,14 +871,8 @@ func createWorktree(name, path, base, startPoint string, orphan bool) {
 	args := []string{"worktree", "add", "-b", name, path}
 	switch {
 	case orphan:
-		if branchExists(name) {
-			fail(fmt.Sprintf("branch %q already exists (--orphan needs a new branch)", name))
-		}
 		args = []string{"worktree", "add", "--orphan", "-b", name, path}
 	case startPoint != "":
-		if _, err := git("show-ref", "--verify", "--quiet", "refs/heads/"+name); err == nil {
-			fail(fmt.Sprintf("branch %q already exists (a start point only applies to a new branch)", name))
-		}
 		sp, err := qualifyStartPoint(startPoint)
 		if err != nil {
 			fail(err.Error())
@@ -1379,11 +1373,13 @@ func fail(msg string) {
 	os.Exit(1)
 }
 
+// exitWithStatus exits with a failed command's status, showing what it said
+// if that was captured rather than printed, or reports any other error.
 func exitWithStatus(err error) {
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) {
+		os.Stderr.Write(exitErr.Stderr)
 		os.Exit(exitErr.ExitCode())
 	}
-	fmt.Fprintln(os.Stderr, err)
-	os.Exit(1)
+	fail(err.Error())
 }
