@@ -631,8 +631,10 @@ func openPRBranch(pr pullRequest) {
 	refspec := "+refs/heads/" + b + ":refs/remotes/origin/" + b
 	// A shallow or single-branch clone fetches only its own branch: add this one,
 	// so origin/<branch> stays a tracking branch git can set as upstream.
+	// A mirror maps every ref already (set-branches would write a broken one).
 	fetch, _ := git("config", "--get-all", "remote.origin.fetch")
-	if lines := strings.Split(fetch, "\n"); !slices.Contains(lines, "+refs/heads/*:refs/remotes/origin/*") && !slices.Contains(lines, refspec) {
+	mirror, _ := git("config", "--type=bool", "--get", "remote.origin.mirror")
+	if lines := strings.Split(fetch, "\n"); mirror != "true" && !slices.Contains(lines, "+refs/heads/*:refs/remotes/origin/*") && !slices.Contains(lines, refspec) {
 		if err := gitLoud("remote", "set-branches", "--add", "origin", b); err != nil {
 			exitWithStatus(err)
 		}
