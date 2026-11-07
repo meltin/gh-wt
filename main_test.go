@@ -735,10 +735,6 @@ func TestPRBehindNoLazyFetch(t *testing.T) {
 }
 
 func TestPRBranch(t *testing.T) {
-	t.Chdir(t.TempDir())
-	t.Setenv("GIT_CONFIG_COUNT", "1")
-	t.Setenv("GIT_CONFIG_KEY_0", "init.defaultBranch")
-	t.Setenv("GIT_CONFIG_VALUE_0", "main") // defaultBranch without origin/HEAD
 	pr := func(head string, cross bool) pullRequest {
 		p := pullRequest{HeadRefName: head, IsCrossRepository: cross}
 		p.HeadRepositoryOwner.Login = "someone"
@@ -750,9 +746,10 @@ func TestPRBranch(t *testing.T) {
 	}{
 		{pr("feat", false), "feat"},
 		{pr("feat", true), "feat"},
+		{pr("main", false), "main"},
 		{pr("main", true), "someone/main"},
 	} {
-		if got := prBranch(c.pr); got != c.want {
+		if got := prBranch(c.pr, "main"); got != c.want {
 			t.Errorf("prBranch(%+v) = %q, want %q", c.pr, got, c.want)
 		}
 	}
@@ -768,7 +765,7 @@ func TestRenderPRTableFits(t *testing.T) {
 		UpdatedAt:   time.Now().Add(-3 * 24 * time.Hour),
 	}}
 	prs[0].Author.Login = "someone"
-	header, lines := renderPRTable(prs, nil, 100)
+	header, lines := renderPRTable(prs, nil, "main", 100)
 	for _, l := range append(lines, header) {
 		if w := ansi.StringWidth(l) + 2; w > 100 {
 			t.Errorf("width %d > 100: %q", w, ansi.Strip(l))

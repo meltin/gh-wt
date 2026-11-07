@@ -120,7 +120,7 @@ A target can be a branch name, a worktree directory name relative to the base di
 | AUTHOR   | PR author                                                                       |
 | UPDATED  | When the PR was last updated                                                    |
 
-`gh pr checkout --worktree` does the checkout, so the PR opens just as gh opens it: fetched first (plain `gh wt <branch>` doesn't fetch), tracking the PR's branch, an existing branch fast-forwarded, and PRs from forks included. gh-wt picks the path under `wt.basedir` and, for a new worktree, copies files and runs `wt.hook`.
+`gh pr checkout --worktree` does the checkout, so the PR opens just as gh opens it: fetched first (plain `gh wt <branch>` doesn't fetch), tracking the PR's branch, an existing branch fast-forwarded (or refused when it can't be), and PRs from forks included; a URL of another repository's PR fetches that PR, as `gh pr checkout <url>` does. gh-wt picks the path under `wt.basedir` and, for a new worktree, copies files and runs `wt.hook`.
 
 ## Deleting worktrees
 

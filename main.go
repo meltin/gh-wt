@@ -509,8 +509,15 @@ func leaveIfGone(cd, wd, mainRoot string) string {
 // selectPR lists the open PRs and opens the selected one in a worktree.
 func selectPR() {
 	var prs []pullRequest
-	var prErr string
-	load := func() { prs, prErr = openPRs() }
+	var prErr, def string
+	load := func() {
+		if prs, prErr = openPRs(); prErr == "" && slices.ContainsFunc(prs, func(pr pullRequest) bool { return pr.IsCrossRepository }) {
+			var err error
+			if def, err = repoDefaultBranch(); err != nil {
+				prErr = err.Error()
+			}
+		}
+	}
 	if isatty.IsTerminal(os.Stderr.Fd()) {
 		_ = spinner.New().Title("Loading pull requests...").Output(os.Stderr).Action(load).Run()
 	} else {
@@ -527,7 +534,7 @@ func selectPR() {
 	if w, _, err := term.GetSize(os.Stderr.Fd()); err == nil {
 		width = w - 3 // huh's "┃ " border plus a spare cell
 	}
-	header, lines := renderPRTable(prs, liveWorktrees(), width)
+	header, lines := renderPRTable(prs, liveWorktrees(), def, width)
 	options := make([]huh.Option[int], len(prs))
 	for i := range prs {
 		options[i] = huh.NewOption(lines[i], i)
@@ -549,12 +556,13 @@ func selectPR() {
 
 // renderPRTable lays out PRs with the worktree's CHANGES when one exists, so
 // it's clear whether selecting moves to it or creates it.
-func renderPRTable(prs []pullRequest, wts []worktree, maxWidth int) (string, []string) {
+func renderPRTable(prs []pullRequest, wts []worktree, def string, maxWidth int) (string, []string) {
 	const colTitle, colBranch = 2, 3
 	cells := make([][]string, len(prs))
 	for i, pr := range prs {
 		changes := ""
-		if j := slices.IndexFunc(wts, func(wt worktree) bool { return wt.branch == prBranch(pr) }); j >= 0 {
+		name := prBranch(pr, def)
+		if j := slices.IndexFunc(wts, func(wt worktree) bool { return wt.branch == name }); j >= 0 {
 			var s status
 			if out, err := git("--no-optional-locks", "-C", wts[j].path, "status", "--porcelain=v2", "--branch"); err == nil {
 				s = parseStatus(out)
@@ -614,7 +622,13 @@ func openPR(arg string) {
 	if err := json.Unmarshal(out, &pr); err != nil {
 		fail(err.Error())
 	}
-	name := prBranch(pr)
+	def := ""
+	if pr.IsCrossRepository {
+		if def, err = repoDefaultBranch(); err != nil {
+			exitWithStatus(err)
+		}
+	}
+	name := prBranch(pr, def)
 	_, base := repoBase()
 	path, reuse := filepath.Join(base, name), false
 	if wt, ok := findWorktree(liveWorktrees(), base, name); ok {
@@ -624,7 +638,11 @@ func openPR(arg string) {
 		path, reuse = wt.path, true
 	}
 	src := currentRoot()
-	cmd = exec.Command("gh", "pr", "checkout", arg, "--branch", name, "--worktree", path)
+	args := []string{"pr", "checkout", arg, "--branch", name}
+	if !reuse || !samePath(path, src) { // gh checks out the current worktree only without --worktree
+		args = append(args, "--worktree", path)
+	}
+	cmd = exec.Command("gh", args...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stderr, os.Stderr
 	if err := cmd.Run(); err != nil {
 		exitWithStatus(err)
@@ -637,13 +655,21 @@ func openPR(arg string) {
 }
 
 // prBranch is the local branch gh pr checkout uses for the PR: its head branch,
-// or <owner>/<branch> for a fork's default-named branch so it doesn't collide
-// with ours.
-func prBranch(pr pullRequest) string {
-	if pr.IsCrossRepository && pr.HeadRefName == defaultBranch() {
+// or <owner>/<branch> for a fork's branch named like the repository's default
+// branch def (as gh gets it from GitHub), so it doesn't collide with ours.
+func prBranch(pr pullRequest, def string) string {
+	if pr.IsCrossRepository && pr.HeadRefName == def {
 		return pr.HeadRepositoryOwner.Login + "/" + pr.HeadRefName
 	}
 	return pr.HeadRefName
+}
+
+// repoDefaultBranch is the repository's default branch on GitHub.
+func repoDefaultBranch() (string, error) {
+	cmd := exec.Command("gh", "repo", "view", "--json", "defaultBranchRef", "--jq", ".defaultBranchRef.name")
+	cmd.Stderr = os.Stderr
+	out, err := cmd.Output()
+	return strings.TrimSpace(string(out)), err
 }
 
 // renameWorktree moves a linked worktree to <base>/<newName> and renames its
