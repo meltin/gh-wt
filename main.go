@@ -335,8 +335,12 @@ func selectWorktree() {
 func switchTo(dir, branch, startPoint string, orphan bool) {
 	_, base := repoBase()
 	wts := liveWorktrees()
-	wt, ok := findWorktree(wts, base, branch)
-	if !ok && dir != branch {
+	// -b names a branch only: a directory or path called like it is not a match.
+	i := slices.IndexFunc(wts, func(wt worktree) bool { return wt.branch == branch })
+	wt, ok := worktree{}, i >= 0
+	if ok {
+		wt = wts[i]
+	} else {
 		wt, ok = findWorktree(wts, base, dir)
 	}
 	if ok {

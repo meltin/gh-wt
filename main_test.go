@@ -555,6 +555,15 @@ func TestCLIBranchAndOrphan(t *testing.T) {
 			t.Errorf("switch by %q: %q, %v", name, p, err)
 		}
 	}
+	// -b names a branch, not a directory: "short" holds another branch, so a
+	// new branch "short" is created in .wt/elsewhere.
+	elsewhere := filepath.Join(repo, ".wt/elsewhere")
+	if p, err := wt("-b", "short", "elsewhere"); err != nil || p != elsewhere {
+		t.Fatalf("-b with a directory's name: %q, %v", p, err)
+	}
+	if b := gitIn("-C", elsewhere, "branch", "--show-current"); b != "short" {
+		t.Fatalf("branch = %q", b)
+	}
 
 	// --orphan (flag after the name): no history, nothing copied, hook still runs.
 	orphan := filepath.Join(repo, ".wt/pages")
