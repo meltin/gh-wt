@@ -28,7 +28,7 @@ USAGE
   gh wt [<branch|worktree|path> [<start-point>]]
   gh wt -b <branch> <worktree> [<start-point>]
   gh wt --orphan [-b <branch>] <worktree>
-  gh wt -p [<number>|<url>]
+  gh wt -p [<number>|<url>|<branch>]
   gh wt -d|-D <branch|worktree|path>...
   gh wt -m|-M [<branch|worktree|path>] <new-name>
   gh wt [flags]
@@ -129,7 +129,9 @@ type pullRequest struct {
 		NameWithOwner string `json:"nameWithOwner"`
 	} `json:"headRepository"`
 	// Only for gh wt -p.
-	URL       string    `json:"url"`
+	HeadRepositoryOwner struct {
+		Login string `json:"login"`
+	} `json:"headRepositoryOwner"`
 	Title     string    `json:"title"`
 	UpdatedAt time.Time `json:"updatedAt"`
 	Author    struct {
@@ -194,7 +196,7 @@ func main() {
 		case 2:
 			openPR(args[1])
 		default:
-			fail("usage: gh wt -p [<number>|<url>]")
+			fail("usage: gh wt -p [<number>|<url>|<branch>]")
 		}
 	case args[0] == "-m" || args[0] == "--move" || args[0] == "-M" || args[0] == "--force-move":
 		if len(args) < 2 || len(args) > 3 {
@@ -504,8 +506,7 @@ func leaveIfGone(cd, wd, mainRoot string) string {
 	return cd
 }
 
-// selectPR lists the open PRs whose branch is on origin and opens the
-// selected one's branch as a worktree.
+// selectPR lists the open PRs and opens the selected one in a worktree.
 func selectPR() {
 	var prs []pullRequest
 	var prErr string
@@ -519,7 +520,7 @@ func selectPR() {
 		fail(prErr)
 	}
 	if len(prs) == 0 {
-		fail("no open pull requests with a branch on origin")
+		fail("no open pull requests")
 	}
 
 	width := 0
@@ -543,7 +544,7 @@ func selectPR() {
 		fmt.Fprintln(os.Stderr, grayStyle.Render("Operation cancelled."))
 		os.Exit(1)
 	}
-	openPRBranch(prs[selected])
+	openPR(strconv.Itoa(prs[selected].Number))
 }
 
 // renderPRTable lays out PRs with the worktree's CHANGES when one exists, so
@@ -553,7 +554,7 @@ func renderPRTable(prs []pullRequest, wts []worktree, maxWidth int) (string, []s
 	cells := make([][]string, len(prs))
 	for i, pr := range prs {
 		changes := ""
-		if j := slices.IndexFunc(wts, func(wt worktree) bool { return wt.branch == pr.HeadRefName }); j >= 0 {
+		if j := slices.IndexFunc(wts, func(wt worktree) bool { return wt.branch == prBranch(pr) }); j >= 0 {
 			var s status
 			if out, err := git("--no-optional-locks", "-C", wts[j].path, "status", "--porcelain=v2", "--branch"); err == nil {
 				s = parseStatus(out)
@@ -580,9 +581,9 @@ func renderPRTable(prs []pullRequest, wts []worktree, maxWidth int) (string, []s
 	})
 }
 
-// openPRs returns the open PRs whose branch is on origin (see inOrigin).
+// openPRs returns the repository's open PRs, including ones from forks.
 func openPRs() ([]pullRequest, string) {
-	cmd := exec.Command("gh", "pr", "list", "--limit", "100", "--json", "number,title,headRefName,headRefOid,headRepository,isDraft,isCrossRepository,author,updatedAt")
+	cmd := exec.Command("gh", "pr", "list", "--limit", "100", "--json", "number,title,headRefName,headRefOid,headRepositoryOwner,isDraft,isCrossRepository,author,updatedAt")
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
@@ -593,18 +594,18 @@ func openPRs() ([]pullRequest, string) {
 	if err := json.Unmarshal(out, &prs); err != nil {
 		return nil, err.Error()
 	}
-	origin := originRepo()
-	return slices.DeleteFunc(prs, func(pr pullRequest) bool { return !inOrigin(pr, origin) }), ""
+	return prs, ""
 }
 
-// openPR opens the PR given as a number, #number or URL.
+// openPR opens the PR given as a number, URL or branch (anything gh pr
+// checkout takes) in a worktree under wt.basedir. gh pr checkout --worktree
+// fetches it, including from forks, and creates the worktree or brings an
+// existing one up to date; gh-wt only picks the path and, for a new worktree,
+// copies files and runs wt.hook.
 func openPR(arg string) {
-	n, err := prNumber(arg)
-	if err != nil {
-		fail(err.Error())
-	}
-	cmd := exec.Command("gh", "pr", "view", strconv.Itoa(n), "--json", "number,url,headRefName,headRepository,isCrossRepository")
-	cmd.Stderr = os.Stderr
+	arg = strings.TrimPrefix(arg, "#")
+	cmd := exec.Command("gh", "pr", "view", arg, "--json", "number,headRefName,headRepositoryOwner,isCrossRepository")
+	cmd.Stdin, cmd.Stderr = os.Stdin, os.Stderr
 	out, err := cmd.Output()
 	if err != nil {
 		exitWithStatus(err)
@@ -613,71 +614,36 @@ func openPR(arg string) {
 	if err := json.Unmarshal(out, &pr); err != nil {
 		fail(err.Error())
 	}
-	// gh pr view takes the number in this repository, so a URL must name it too.
-	if want := prRepo(arg); want != "" && !strings.EqualFold(want, prRepo(pr.URL)) {
-		fail(fmt.Sprintf("%s is not a pull request in this repository (#%d here is %s)", arg, n, pr.URL))
-	}
-	openPRBranch(pr)
-}
-
-// openPRBranch fetches the PR's branch into origin/<branch>, then switches to
-// or creates its worktree. A new local branch starts at origin/<branch> and
-// tracks it.
-func openPRBranch(pr pullRequest) {
-	if !inOrigin(pr, originRepo()) {
-		fail(fmt.Sprintf("PR #%d's branch is in another fork (%s), which gh wt -p doesn't support yet", pr.Number, pr.HeadRepository.NameWithOwner))
-	}
-	b := pr.HeadRefName
-	refspec := "+refs/heads/" + b + ":refs/remotes/origin/" + b
-	// A shallow or single-branch clone fetches only its own branch: add this one,
-	// so origin/<branch> stays a tracking branch git can set as upstream.
-	// A mirror maps every ref already (set-branches would write a broken one).
-	fetch, _ := git("config", "--get-all", "remote.origin.fetch")
-	mirror, _ := git("config", "--type=bool", "--get", "remote.origin.mirror")
-	if lines := strings.Split(fetch, "\n"); mirror != "true" && !slices.Contains(lines, "+refs/heads/*:refs/remotes/origin/*") && !slices.Contains(lines, refspec) {
-		if err := gitLoud("remote", "set-branches", "--add", "origin", b); err != nil {
-			exitWithStatus(err)
+	name := prBranch(pr)
+	_, base := repoBase()
+	path, reuse := filepath.Join(base, name), false
+	if wt, ok := findWorktree(liveWorktrees(), base, name); ok {
+		if wt.branch != name { // gh would switch that worktree to the PR's branch
+			fail(fmt.Sprintf("worktree %s (%s) already exists", tilde(wt.path), label(wt)))
 		}
+		path, reuse = wt.path, true
 	}
-	// An explicit refspec, so a tag of the same name can't stand in for the branch.
-	if err := gitLoud("fetch", "origin", refspec); err != nil {
-		fail(fmt.Sprintf("failed to fetch %q for PR #%d", b, pr.Number))
+	src := currentRoot()
+	cmd = exec.Command("gh", "pr", "checkout", arg, "--branch", name, "--worktree", path)
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stderr, os.Stderr
+	if err := cmd.Run(); err != nil {
+		exitWithStatus(err)
 	}
-	if _, err := git("show-ref", "--verify", "--quiet", "refs/heads/"+b); err == nil {
-		if _, err := git("merge-base", "--is-ancestor", "refs/remotes/origin/"+b, "refs/heads/"+b); err != nil {
-			note("Local branch %s doesn't have all of PR #%d's commits: pull origin/%s to update it", b, pr.Number, b)
-		}
-		switchTo(b, b, "", false)
+	if reuse {
+		fmt.Println(path)
 		return
 	}
-	switchTo(b, b, "origin/"+b, false) // git sets origin/<branch> as the upstream
+	setUpWorktree(src, path, base)
 }
 
-// prNumber reads a PR number from "123", "#123" or a .../pull/123 URL.
-func prNumber(arg string) (int, error) {
-	s := strings.TrimPrefix(arg, "#")
-	if _, rest, ok := strings.Cut(arg, "/pull/"); ok {
-		s, _, _ = strings.Cut(rest, "/")
-		s, _, _ = strings.Cut(s, "?")
-		s, _, _ = strings.Cut(s, "#")
+// prBranch is the local branch gh pr checkout uses for the PR: its head branch,
+// or <owner>/<branch> for a fork's default-named branch so it doesn't collide
+// with ours.
+func prBranch(pr pullRequest) string {
+	if pr.IsCrossRepository && pr.HeadRefName == defaultBranch() {
+		return pr.HeadRepositoryOwner.Login + "/" + pr.HeadRefName
 	}
-	n, err := strconv.Atoi(s)
-	if err != nil || n <= 0 {
-		return 0, fmt.Errorf("not a PR number or URL: %q", arg)
-	}
-	return n, nil
-}
-
-// prRepo returns the host/owner/repo of a .../pull/N URL, or "" for a number.
-func prRepo(url string) string {
-	repo, _, ok := strings.Cut(url, "/pull/")
-	if !ok {
-		return ""
-	}
-	if _, rest, ok := strings.Cut(repo, "://"); ok {
-		repo = rest
-	}
-	return repo
+	return pr.HeadRefName
 }
 
 // renameWorktree moves a linked worktree to <base>/<newName> and renames its
@@ -900,8 +866,16 @@ func createWorktree(name, path, base, startPoint string, orphan bool) {
 	if err := gitLoud(args...); err != nil {
 		exitWithStatus(err)
 	}
+	if orphan { // an orphan worktree starts empty, as in git-wt
+		src = ""
+	}
+	setUpWorktree(src, path, base)
+}
 
-	if src != "" && !orphan { // an orphan worktree starts empty, as in git-wt
+// setUpWorktree copies files from the src worktree (if any) into the new
+// worktree at path, runs wt.hook there and prints the path.
+func setUpWorktree(src, path, base string) {
+	if src != "" {
 		copyFiles(src, path, base)
 	}
 

@@ -50,7 +50,7 @@ USAGE
   gh wt [<branch|worktree|path> [<start-point>]]
   gh wt -b <branch> <worktree> [<start-point>]
   gh wt --orphan [-b <branch>] <worktree>
-  gh wt -p [<number>|<url>]
+  gh wt -p [<number>|<url>|<branch>]
   gh wt -d|-D <branch|worktree|path>...
   gh wt -m|-M [<branch|worktree|path>] <new-name>
   gh wt [flags]
@@ -109,7 +109,7 @@ A target can be a branch name, a worktree directory name relative to the base di
 
 ## Opening pull requests
 
-`gh wt -p` lists the repository's open pull requests and opens the selected one's branch: like `gh wt <branch>`, it moves to the worktree if there is one and creates it otherwise. `gh wt -p <number>` (or `#<number>`, or the PR's URL) opens a PR directly.
+`gh wt -p` lists the repository's open pull requests and opens the selected one's branch: like `gh wt <branch>`, it moves to the worktree if there is one and creates it otherwise. `gh wt -p <number>` (or `#<number>`, the PR's URL or its branch) opens a PR directly.
 
 | Column   | Content                                                                         |
 | -------- | ------------------------------------------------------------------------------- |
@@ -120,7 +120,7 @@ A target can be a branch name, a worktree directory name relative to the base di
 | AUTHOR   | PR author                                                                       |
 | UPDATED  | When the PR was last updated                                                    |
 
-The branch is fetched into `origin/<branch>` first (plain `gh wt <branch>` doesn't fetch), so the PR's commits open even in a clone that never fetched it, including shallow and single-branch clones (`origin`'s fetch refspec gets the branch added); a new local branch tracks it. An existing local branch is checked out as is, with a note when it's missing commits from the PR. PRs whose branch is in someone else's fork are not supported yet: they're left out of the list, and `gh wt -p <number>` refuses them. When origin is your fork, your own PRs to the upstream repository are included.
+`gh pr checkout --worktree` does the checkout, so the PR opens just as gh opens it: fetched first (plain `gh wt <branch>` doesn't fetch), tracking the PR's branch, an existing branch fast-forwarded, and PRs from forks included. gh-wt picks the path under `wt.basedir` and, for a new worktree, copies files and runs `wt.hook`.
 
 ## Deleting worktrees
 

@@ -734,21 +734,26 @@ func TestPRBehindNoLazyFetch(t *testing.T) {
 	}
 }
 
-func TestPRNumber(t *testing.T) {
-	for arg, want := range map[string]int{
-		"1720":                                   1720,
-		"#1720":                                  1720,
-		"https://github.com/o/r/pull/1720":       1720,
-		"https://github.com/o/r/pull/1720/files": 1720,
-		"abc":                                    0,
-		"0":                                      0,
-		"https://github.com/o/r/issues/5":        0,
-		"https://github.com/o/r/pull/5?diff=split":    5,
-		"https://github.com/o/r/pull/5#discussion_r1": 5,
+func TestPRBranch(t *testing.T) {
+	t.Chdir(t.TempDir())
+	t.Setenv("GIT_CONFIG_COUNT", "1")
+	t.Setenv("GIT_CONFIG_KEY_0", "init.defaultBranch")
+	t.Setenv("GIT_CONFIG_VALUE_0", "main") // defaultBranch without origin/HEAD
+	pr := func(head string, cross bool) pullRequest {
+		p := pullRequest{HeadRefName: head, IsCrossRepository: cross}
+		p.HeadRepositoryOwner.Login = "someone"
+		return p
+	}
+	for _, c := range []struct {
+		pr   pullRequest
+		want string
+	}{
+		{pr("feat", false), "feat"},
+		{pr("feat", true), "feat"},
+		{pr("main", true), "someone/main"},
 	} {
-		got, err := prNumber(arg)
-		if got != want || (want == 0) != (err != nil) {
-			t.Errorf("prNumber(%q) = %d, %v; want %d", arg, got, err, want)
+		if got := prBranch(c.pr); got != c.want {
+			t.Errorf("prBranch(%+v) = %q, want %q", c.pr, got, c.want)
 		}
 	}
 }
