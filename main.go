@@ -667,9 +667,8 @@ func prBranch(pr pullRequest, def string) string {
 
 // repoDefaultBranch is the repository's default branch on GitHub.
 func repoDefaultBranch() (string, error) {
-	cmd := exec.Command("gh", "repo", "view", "--json", "defaultBranchRef", "--jq", ".defaultBranchRef.name")
-	cmd.Stderr = os.Stderr
-	out, err := cmd.Output()
+	// gh's stderr is kept in the error, so it's shown after the picker's spinner.
+	out, err := exec.Command("gh", "repo", "view", "--json", "defaultBranchRef", "--jq", ".defaultBranchRef.name").Output()
 	return strings.TrimSpace(string(out)), err
 }
 
