@@ -642,7 +642,7 @@ func openPRBranch(pr pullRequest) {
 		fail(fmt.Sprintf("failed to fetch %q for PR #%d", b, pr.Number))
 	}
 	if _, err := git("show-ref", "--verify", "--quiet", "refs/heads/"+b); err == nil {
-		if _, err := git("merge-base", "--is-ancestor", "origin/"+b, b); err != nil {
+		if _, err := git("merge-base", "--is-ancestor", "refs/remotes/origin/"+b, "refs/heads/"+b); err != nil {
 			note("Local branch %s doesn't have all of PR #%d's commits: pull origin/%s to update it", b, pr.Number, b)
 		}
 		switchTo(b, b, "", false)
