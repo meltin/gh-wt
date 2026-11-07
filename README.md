@@ -120,7 +120,7 @@ A target can be a branch name, a worktree directory name relative to the base di
 | AUTHOR   | PR author                                                                       |
 | UPDATED  | When the PR was last updated                                                    |
 
-The branch is fetched from `origin` first, so a clone that never fetched it opens the PR's commits instead of creating a new branch (plain `gh wt <branch>` doesn't fetch). PRs whose branch is in someone else's fork are not supported yet: they're left out of the list, and `gh wt -p <number>` refuses them. When origin is your fork, your own PRs to the upstream repository are included.
+The branch is fetched into `origin/<branch>` first (plain `gh wt <branch>` doesn't fetch), so the PR's commits open even in a clone that never fetched it, including shallow and single-branch clones; a new local branch tracks it. An existing local branch is checked out as is, with a note when it's missing commits from the PR. PRs whose branch is in someone else's fork are not supported yet: they're left out of the list, and `gh wt -p <number>` refuses them. When origin is your fork, your own PRs to the upstream repository are included.
 
 ## Deleting worktrees
 

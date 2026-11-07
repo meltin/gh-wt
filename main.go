@@ -129,6 +129,7 @@ type pullRequest struct {
 		NameWithOwner string `json:"nameWithOwner"`
 	} `json:"headRepository"`
 	// Only for gh wt -p.
+	URL       string    `json:"url"`
 	Title     string    `json:"title"`
 	UpdatedAt time.Time `json:"updatedAt"`
 	Author    struct {
@@ -518,7 +519,7 @@ func selectPR() {
 		fail(prErr)
 	}
 	if len(prs) == 0 {
-		fail("no open pull requests")
+		fail("no open pull requests with a branch on origin")
 	}
 
 	width := 0
@@ -602,7 +603,7 @@ func openPR(arg string) {
 	if err != nil {
 		fail(err.Error())
 	}
-	cmd := exec.Command("gh", "pr", "view", strconv.Itoa(n), "--json", "number,headRefName,headRepository,isCrossRepository")
+	cmd := exec.Command("gh", "pr", "view", strconv.Itoa(n), "--json", "number,url,headRefName,headRepository,isCrossRepository")
 	cmd.Stderr = os.Stderr
 	out, err := cmd.Output()
 	if err != nil {
@@ -612,20 +613,41 @@ func openPR(arg string) {
 	if err := json.Unmarshal(out, &pr); err != nil {
 		fail(err.Error())
 	}
+	// gh pr view takes the number in this repository, so a URL must name it too.
+	if want := prRepo(arg); want != "" && !strings.EqualFold(want, prRepo(pr.URL)) {
+		fail(fmt.Sprintf("%s is not a pull request in this repository (#%d here is %s)", arg, n, pr.URL))
+	}
 	openPRBranch(pr)
 }
 
-// openPRBranch fetches the PR's branch from origin, so a clone that never saw
-// it checks out the PR rather than creating a new branch, then switches to or
-// creates its worktree.
+// openPRBranch fetches the PR's branch into origin/<branch>, then switches to
+// or creates its worktree. A new local branch starts at origin/<branch> and
+// tracks it.
 func openPRBranch(pr pullRequest) {
 	if !inOrigin(pr, originRepo()) {
 		fail(fmt.Sprintf("PR #%d's branch is in another fork (%s), which gh wt -p doesn't support yet", pr.Number, pr.HeadRepository.NameWithOwner))
 	}
-	if err := gitLoud("fetch", "origin", pr.HeadRefName); err != nil {
-		fail(fmt.Sprintf("failed to fetch %q for PR #%d", pr.HeadRefName, pr.Number))
+	b := pr.HeadRefName
+	// An explicit refspec, so a tag of the same name or a single-branch clone's
+	// narrow fetch refspec can't leave origin/<branch> missing.
+	if err := gitLoud("fetch", "origin", "+refs/heads/"+b+":refs/remotes/origin/"+b); err != nil {
+		fail(fmt.Sprintf("failed to fetch %q for PR #%d", b, pr.Number))
 	}
-	switchTo(pr.HeadRefName, pr.HeadRefName, "", false)
+	if _, err := git("show-ref", "--verify", "--quiet", "refs/heads/"+b); err == nil {
+		if _, err := git("merge-base", "--is-ancestor", "origin/"+b, b); err != nil {
+			note("Local branch %s doesn't have all of PR #%d's commits: pull origin/%s to update it", b, pr.Number, b)
+		}
+		switchTo(b, b, "", false)
+		return
+	}
+	// Set the upstream up front: git only does so itself when origin's fetch
+	// refspec covers the branch.
+	for _, kv := range [][2]string{{"remote", "origin"}, {"merge", "refs/heads/" + b}} {
+		if _, err := git("config", "branch."+b+"."+kv[0], kv[1]); err != nil {
+			fail(err.Error())
+		}
+	}
+	switchTo(b, b, "origin/"+b, false)
 }
 
 // prNumber reads a PR number from "123", "#123" or a .../pull/123 URL.
@@ -633,12 +655,26 @@ func prNumber(arg string) (int, error) {
 	s := strings.TrimPrefix(arg, "#")
 	if _, rest, ok := strings.Cut(arg, "/pull/"); ok {
 		s, _, _ = strings.Cut(rest, "/")
+		s, _, _ = strings.Cut(s, "?")
+		s, _, _ = strings.Cut(s, "#")
 	}
 	n, err := strconv.Atoi(s)
 	if err != nil || n <= 0 {
 		return 0, fmt.Errorf("not a PR number or URL: %q", arg)
 	}
 	return n, nil
+}
+
+// prRepo returns the host/owner/repo of a .../pull/N URL, or "" for a number.
+func prRepo(url string) string {
+	repo, _, ok := strings.Cut(url, "/pull/")
+	if !ok {
+		return ""
+	}
+	if _, rest, ok := strings.Cut(repo, "://"); ok {
+		repo = rest
+	}
+	return repo
 }
 
 // renameWorktree moves a linked worktree to <base>/<newName> and renames its

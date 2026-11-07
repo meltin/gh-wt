@@ -743,6 +743,8 @@ func TestPRNumber(t *testing.T) {
 		"abc":                                    0,
 		"0":                                      0,
 		"https://github.com/o/r/issues/5":        0,
+		"https://github.com/o/r/pull/5?diff=split":    5,
+		"https://github.com/o/r/pull/5#discussion_r1": 5,
 	} {
 		got, err := prNumber(arg)
 		if got != want || (want == 0) != (err != nil) {
