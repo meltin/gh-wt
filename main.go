@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"strconv"
@@ -302,10 +303,12 @@ func selectWorktree() {
 	}
 	prs := lookupPRs(wts)
 	var rows []row
-	spin("Loading worktrees...", func() { rows = localRows(wts, current) })
+	var prWidth int
+	spin("Loading worktrees...", func() { rows, prWidth = localRows(wts, current), prColumnWidth() })
 
 	var selected string
 	p := newPicker(rows, width, prs, &selected)
+	p.prWidth = prWidth
 	_, err := tea.NewProgram(p, tea.WithOutput(os.Stderr), tea.WithReportFocus()).Run()
 	if err != nil || p.form.State != huh.StateCompleted {
 		fmt.Fprintln(os.Stderr, grayStyle.Render("Operation cancelled."))
@@ -577,7 +580,7 @@ func renderPRTable(prs []pullRequest, wts []worktree, def string, maxWidth int) 
 	}
 	return layoutTable([]string{"WORKTREE", "PR", "TITLE", "BRANCH", "AUTHOR", "UPDATED"}, cells, maxWidth, []shrinkStep{
 		{colTitle, 30}, {colBranch, 20}, {colTitle, 10}, {colBranch, 10},
-	})
+	}, nil)
 }
 
 // openPRs returns the repository's open PRs, including ones from forks.
@@ -1006,7 +1009,7 @@ func listWorktrees() {
 	// background job waits for the PRs as before.
 	live := err == nil && len(wts)+2 <= height && foreground()
 	spin("Loading worktrees...", func() {
-		t.rows = localRows(wts, currentRoot())
+		t.rows, t.prWidth = localRows(wts, currentRoot()), prColumnWidth()
 		if !live {
 			t.update(<-t.prs)
 		}
@@ -1083,6 +1086,25 @@ func localRows(wts []worktree, current string) []row {
 	return rows
 }
 
+// prRef is a PR number in a subject, as in "(#123)" or "Merge pull request #123".
+var prRef = regexp.MustCompile(`#(\d+)`)
+
+// prColumnWidth is how wide the PR column will get, guessed from the largest
+// PR number in the default branch's recent subjects, so the table keeps that
+// room while the PRs load. It is 0 when the history names no PR.
+func prColumnWidth() int {
+	out, _ := git("log", "-n", "50", "--format=%s", defaultBranch())
+	n := 0
+	for _, m := range prRef.FindAllStringSubmatch(out, -1) {
+		v, _ := strconv.Atoi(m[1])
+		n = max(n, v)
+	}
+	if n == 0 {
+		return 0
+	}
+	return ansi.StringWidth(prCell(&pullRequest{Number: n, State: "MERGED"}))
+}
+
 // prLookup is each worktree's PR, in the order of the worktrees, or gh's error.
 type prLookup struct {
 	prs []prRow
@@ -1118,12 +1140,13 @@ func lookupPRs(wts []worktree) <-chan prLookup {
 // liveTable is the worktree table while the PRs load: the PR column shows a
 // spinner until they arrive, then the PRs and the commits pushed to them.
 type liveTable struct {
-	rows   []row
-	width  int
-	prs    <-chan prLookup
-	spin   bspinner.Model
-	loaded bool
-	err    string
+	rows    []row
+	width   int
+	prWidth int // room kept for the PR column, from prColumnWidth
+	prs     <-chan prLookup
+	spin    bspinner.Model
+	loaded  bool
+	err     string
 }
 
 func newLiveTable(width int, prs <-chan prLookup) liveTable {
@@ -1167,7 +1190,7 @@ func (t *liveTable) render() (string, []string) {
 	if !t.loaded {
 		frame = t.spin.View()
 	}
-	return renderTable(t.rows, t.width, frame)
+	return renderTable(t.rows, t.width, frame, t.prWidth)
 }
 
 // listText is the table of gh wt -l, marking the current worktree.
@@ -1308,9 +1331,10 @@ func filtering(s *huh.Select[string]) bool {
 // indent, matching the caller's mark in the list or huh's cursor in the picker;
 // lines are returned without it. With maxWidth > 0 the path, subject and branch
 // columns shrink, in that order, so every line fits. A spinner frame stands in
-// for the PR of each branch while the PRs load.
-func renderTable(rows []row, maxWidth int, loading string) (string, []string) {
-	const colBranch, colSubject, colPath = 0, 3, 5
+// for the PR of each branch while the PRs load, and the PR column keeps at
+// least prWidth cells, so it doesn't widen when they arrive.
+func renderTable(rows []row, maxWidth int, loading string, prWidth int) (string, []string) {
+	const colBranch, colPR, colSubject, colPath = 0, 2, 3, 5
 	titles := []string{"BRANCH", "CHANGES", "PR", "LAST COMMIT", "", "PATH"}
 	cells := make([][]string, len(rows))
 	for i, r := range rows {
@@ -1330,7 +1354,7 @@ func renderTable(rows []row, maxWidth int, loading string) (string, []string) {
 	return layoutTable(titles, cells, maxWidth, []shrinkStep{
 		{colPath, 24}, {colSubject, 30}, {colBranch, 20},
 		{colPath, 8}, {colSubject, 10}, {colBranch, 10},
-	})
+	}, map[int]int{colPR: prWidth})
 }
 
 // shrinkStep narrows column col down to min cells while the table is too wide.
@@ -1338,11 +1362,12 @@ type shrinkStep struct{ col, min int }
 
 // layoutTable aligns cells under underlined titles. The header starts with 2
 // cells of indent, matching the caller's mark or huh's cursor; lines are
-// returned without it. With maxWidth > 0 the shrink steps apply in order.
-func layoutTable(titles []string, cells [][]string, maxWidth int, shrink []shrinkStep) (string, []string) {
+// returned without it. A column is at least as wide as its floor, and with
+// maxWidth > 0 the shrink steps apply in order.
+func layoutTable(titles []string, cells [][]string, maxWidth int, shrink []shrinkStep, floors map[int]int) (string, []string) {
 	widths := make([]int, len(titles))
 	for c, t := range titles {
-		widths[c] = len(t)
+		widths[c] = max(len(t), floors[c])
 		for _, cs := range cells {
 			widths[c] = max(widths[c], ansi.StringWidth(cs[c]))
 		}

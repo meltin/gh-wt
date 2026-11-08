@@ -70,7 +70,7 @@ func TestRenderTableFits(t *testing.T) {
 		when:    "31 hours ago",
 		subject: "fix(最近見た工事): 一覧の見出しと最初の日付見出しの間隔を詰める",
 	}}
-	header, lines := renderTable(rows, 100, "")
+	header, lines := renderTable(rows, 100, "", 0)
 	for _, l := range append(lines, header) {
 		if w := ansi.StringWidth(l) + 2; w > 100 { // +2 for the mark or cursor
 			t.Errorf("width %d > 100: %q", w, ansi.Strip(l))
@@ -954,5 +954,50 @@ func TestPickerLookupBeforeSize(t *testing.T) {
 	p.Update(tea.WindowSizeMsg{Width: 130, Height: 40})
 	if v := ansi.Strip(p.View()); !strings.Contains(v, "#101 merged") || !strings.Contains(v, "#103 merged") {
 		t.Errorf("view:\n%s", v)
+	}
+}
+
+// The PR column's room comes from the PR numbers in the default branch's subjects.
+func TestPRColumnWidth(t *testing.T) {
+	initStyles()
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_AUTHOR_NAME", "t")
+	t.Setenv("GIT_AUTHOR_EMAIL", "t@t")
+	t.Setenv("GIT_COMMITTER_NAME", "t")
+	t.Setenv("GIT_COMMITTER_EMAIL", "t@t")
+	repo := t.TempDir()
+	run := func(args ...string) {
+		t.Helper()
+		if out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	run("init", "-q", "-b", "main")
+	run("config", "init.defaultBranch", "main")
+	run("commit", "-q", "--allow-empty", "-m", "init")
+	t.Chdir(repo)
+	if w := prColumnWidth(); w != 0 {
+		t.Errorf("no PR in the history: width %d, want 0", w)
+	}
+	run("commit", "-q", "--allow-empty", "-m", "Merge pull request #4567 from me/x")
+	run("commit", "-q", "--allow-empty", "-m", "fix: y (#89)")
+	want := ansi.StringWidth(prCell(&pullRequest{Number: 4567, State: "MERGED"}))
+	if w := prColumnWidth(); w != want {
+		t.Errorf("width %d, want %d", w, want)
+	}
+}
+
+// With the PR column's room kept, the columns don't move when the PRs arrive.
+func TestNoShiftWhenPRsArrive(t *testing.T) {
+	initStyles()
+	rows, l := pickerRows()
+	tbl := newLiveTable(160, nil)
+	tbl.rows = rows
+	tbl.prWidth = ansi.StringWidth(prCell(&pullRequest{Number: 103, State: "MERGED"}))
+	before, _ := tbl.render()
+	tbl.update(l)
+	after, _ := tbl.render()
+	if ansi.Strip(before) != ansi.Strip(after) {
+		t.Errorf("header moved:\n%q\n%q", ansi.Strip(before), ansi.Strip(after))
 	}
 }
