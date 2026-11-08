@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -69,7 +70,7 @@ func TestRenderTableFits(t *testing.T) {
 		when:    "31 hours ago",
 		subject: "fix(最近見た工事): 一覧の見出しと最初の日付見出しの間隔を詰める",
 	}}
-	header, lines := renderTable(rows, 100)
+	header, lines := renderTable(rows, 100, "")
 	for _, l := range append(lines, header) {
 		if w := ansi.StringWidth(l) + 2; w > 100 { // +2 for the mark or cursor
 			t.Errorf("width %d > 100: %q", w, ansi.Strip(l))
@@ -782,5 +783,105 @@ func TestRenderPRTableFits(t *testing.T) {
 	}
 	if !strings.Contains(ansi.Strip(lines[0]), "#1720 draft") {
 		t.Errorf("draft PR should say so: %q", ansi.Strip(lines[0]))
+	}
+}
+
+// pickerRows are three worktrees (the first current) and a PR for each branch.
+func pickerRows() ([]row, prLookup) {
+	rows := []row{
+		{wt: worktree{path: "/r", branch: "main"}, current: true},
+		{wt: worktree{path: "/r/.wt/alpha", branch: "alpha"}},
+		{wt: worktree{path: "/r/.wt/beta", branch: "beta"}},
+		{wt: worktree{path: "/r/.wt/gamma", branch: "gamma"}},
+	}
+	l := prLookup{prs: make([]prRow, len(rows))}
+	for i := 1; i < len(rows); i++ {
+		l.prs[i] = prRow{pr: &pullRequest{Number: 100 + i, State: "MERGED"}}
+	}
+	return rows, l
+}
+
+func startPicker(t *testing.T, rows []row) (*picker, *string) {
+	t.Helper()
+	var selected string
+	p := newPicker(rows, 120, nil, &selected)
+	p.Init()
+	p.Update(tea.WindowSizeMsg{Width: 130, Height: 40})
+	return p, &selected
+}
+
+func key(s string) tea.KeyMsg {
+	switch s {
+	case "down":
+		return tea.KeyMsg{Type: tea.KeyDown}
+	case "esc":
+		return tea.KeyMsg{Type: tea.KeyEsc}
+	}
+	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
+}
+
+// The PRs fill into the running picker without moving the cursor or hiding rows.
+func TestPickerFillsInPRs(t *testing.T) {
+	initStyles()
+	rows, l := pickerRows()
+	p, selected := startPicker(t, rows)
+	if v := ansi.Strip(p.View()); strings.Contains(v, "#10") {
+		t.Fatalf("PRs shown before they arrive:\n%s", v)
+	}
+	p.Update(key("down"))
+	p.Update(l)
+	v := ansi.Strip(p.View())
+	for _, want := range []string{"alpha", "#101 merged", "#102 merged", "#103 merged"} {
+		if !strings.Contains(v, want) {
+			t.Errorf("view lacks %q:\n%s", want, v)
+		}
+	}
+	cursor := slices.IndexFunc(strings.Split(v, "\n"), func(line string) bool { return strings.Contains(line, "> ") })
+	if line := strings.Split(v, "\n")[cursor]; !strings.Contains(line, "beta") {
+		t.Errorf("cursor moved to %q", line)
+	}
+	if *selected != "/r/.wt/beta" {
+		t.Errorf("selected = %q", *selected)
+	}
+}
+
+// A filter keeps the lines it shows until it's cleared, then the PRs fill in.
+func TestPickerHoldsPRsWhileFiltering(t *testing.T) {
+	initStyles()
+	rows, l := pickerRows()
+	p, _ := startPicker(t, rows)
+	for _, k := range []string{"/", "a"} {
+		p.Update(key(k))
+	}
+	p.Update(l)
+	if v := ansi.Strip(p.View()); strings.Contains(v, "#10") {
+		t.Fatalf("PRs shown while typing a filter:\n%s", v)
+	}
+	p.Update(key("esc")) // keep the filter, leave typing
+	p.Update(refreshMsg{})
+	if v := ansi.Strip(p.View()); strings.Contains(v, "#10") {
+		t.Fatalf("PRs shown under a filter:\n%s", v)
+	}
+	_, cmd := p.Update(key("esc")) // clear the filter
+	if cmd == nil {
+		t.Fatal("clearing the filter should ask for a refresh")
+	}
+	p.Update(refreshMsg{})
+	if v := ansi.Strip(p.View()); !strings.Contains(v, "#101 merged") || !strings.Contains(v, "#103 merged") {
+		t.Errorf("PRs missing after the filter is cleared:\n%s", v)
+	}
+}
+
+// gh wt -l redraws once with the PRs, then quits.
+func TestListModelQuitsWithPRs(t *testing.T) {
+	initStyles()
+	rows, l := pickerRows()
+	m := &listModel{newLiveTable(120, nil)}
+	m.rows = rows
+	if _, cmd := m.Update(l); cmd == nil || cmd() != tea.Quit() {
+		t.Error("should quit once the PRs are in")
+	}
+	if v := ansi.Strip(m.View()); !strings.Contains(v, "#101 merged") || !strings.HasSuffix(v, "\n") {
+		t.Errorf("view:\n%q", v)
 	}
 }

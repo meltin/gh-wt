@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 
+	bspinner "github.com/charmbracelet/bubbles/spinner"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/huh/spinner"
 	"github.com/charmbracelet/lipgloss"
@@ -294,38 +296,22 @@ func selectWorktree() {
 	if !slices.ContainsFunc(wts, func(wt worktree) bool { return !samePath(wt.path, current) }) {
 		fail("no other worktrees")
 	}
-
-	rows := collectRows(wts, current)
 	width := 0
 	if w, _, err := term.GetSize(os.Stderr.Fd()); err == nil {
 		width = w - 3 // huh's "┃ " border plus a spare cell
 	}
-	header, lines := renderTable(rows, width)
-
-	// huh has no disabled options, so the current worktree goes into the
-	// description under the header, where it shows but cannot be selected.
-	description := header
-	var options []huh.Option[string]
-	for i, r := range rows {
-		if r.current {
-			description += "\n" + grayStyle.Render(iconCurrent+" "+ansi.Strip(lines[i]))
-			continue
-		}
-		options = append(options, huh.NewOption(lines[i], r.wt.path))
-	}
+	prs := lookupPRs(wts)
+	var rows []row
+	spin("Loading worktrees...", func() { rows = localRows(wts, current) })
 
 	var selected string
-	err := huh.NewForm(huh.NewGroup(
-		huh.NewSelect[string]().
-			Title("Select a worktree:").
-			Description(description).
-			Options(options...).
-			Value(&selected),
-	)).WithOutput(os.Stderr).Run()
-	if err != nil {
+	p := newPicker(rows, width, prs, &selected)
+	_, err := tea.NewProgram(p, tea.WithOutput(os.Stderr), tea.WithReportFocus()).Run()
+	if err != nil || p.form.State != huh.StateCompleted {
 		fmt.Fprintln(os.Stderr, grayStyle.Render("Operation cancelled."))
 		os.Exit(1)
 	}
+	p.reportErr()
 	fmt.Println(selected)
 }
 
@@ -1009,91 +995,280 @@ func within(path, dir string) bool {
 }
 
 func listWorktrees() {
-	rows := collectRows(liveWorktrees(), currentRoot())
-	width := 0
-	if w, _, err := term.GetSize(os.Stdout.Fd()); err == nil {
-		width = w
+	wts := liveWorktrees()
+	t := newLiveTable(0, lookupPRs(wts))
+	width, height, err := term.GetSize(os.Stdout.Fd())
+	if err == nil {
+		t.width = width
 	}
-	header, lines := renderTable(rows, width)
-	fmt.Println(header)
-	for i, line := range lines {
-		mark := " "
-		if rows[i].current {
-			mark = greenStyle.Render(iconCurrent)
+	// The table is drawn first and redrawn when the PRs arrive, which needs all
+	// of it on screen; a taller one (or a pipe) waits for the PRs as before.
+	live := err == nil && len(wts)+2 <= height
+	spin("Loading worktrees...", func() {
+		t.rows = localRows(wts, currentRoot())
+		if !live {
+			t.update(<-t.prs)
 		}
-		fmt.Println(mark + " " + line)
+	})
+	if !live {
+		fmt.Print(t.listText())
+		t.reportErr()
+		return
+	}
+	m := &listModel{t}
+	if _, err := tea.NewProgram(m, tea.WithOutput(os.Stdout), tea.WithInput(nil)).Run(); err != nil {
+		if errors.Is(err, tea.ErrInterrupted) {
+			os.Exit(130)
+		}
+		fail(err.Error())
+	}
+	m.reportErr()
+}
+
+// spin runs fn behind a spinner on stderr when that's a terminal.
+func spin(title string, fn func()) {
+	if isatty.IsTerminal(os.Stderr.Fd()) {
+		_ = spinner.New().Title(title).Output(os.Stderr).Action(fn).Run()
+	} else {
+		fn()
 	}
 }
 
-// collectRows gathers git status, last commit and PR for each worktree,
-// fetching PRs concurrently and showing a spinner on a terminal.
-func collectRows(wts []worktree, current string) []row {
-	var rows []row
-	var prErr string
-	collect := func() {
-		type prResult struct {
-			prs map[string]pullRequest
-			err string
+// localRows reads each worktree's status and last commit, which takes no network.
+func localRows(wts []worktree, current string) []row {
+	rows := make([]row, len(wts))
+	for i, wt := range wts {
+		r := row{wt: wt, current: samePath(wt.path, current)}
+		if out, err := git("--no-optional-locks", "-C", wt.path, "status", "--porcelain=v2", "--branch"); err == nil {
+			r.status = parseStatus(out)
 		}
-		ch := make(chan prResult, 1)
-		go func() {
-			prs, err := fetchPRs()
-			ch <- prResult{prs, err}
-		}()
+		if out, err := git("-C", wt.path, "log", "-1", "--format=%cr\x1f%s"); err == nil {
+			r.when, r.subject, _ = strings.Cut(out, "\x1f")
+		}
+		rows[i] = r
+	}
+	return rows
+}
 
-		rows = make([]row, len(wts))
+// prLookup is each worktree's PR, in the order of the worktrees, or gh's error.
+type prLookup struct {
+	prs []prRow
+	err string
+}
+
+type prRow struct {
+	pr     *pullRequest
+	behind int  // commits of an open PR's head missing from the worktree
+	known  bool // behind could be counted: the head commit is fetched
+}
+
+// lookupPRs finds each worktree's PR in the background. The channel is
+// buffered, so the lookup can finish after nobody waits for it any more.
+func lookupPRs(wts []worktree) <-chan prLookup {
+	ch := make(chan prLookup, 1)
+	go func() {
+		prs, err := fetchPRs()
+		l := prLookup{prs: make([]prRow, len(wts)), err: err}
 		for i, wt := range wts {
-			r := row{wt: wt, current: samePath(wt.path, current)}
-			if out, err := git("--no-optional-locks", "-C", wt.path, "status", "--porcelain=v2", "--branch"); err == nil {
-				r.status = parseStatus(out)
-			}
-			if out, err := git("-C", wt.path, "log", "-1", "--format=%cr\x1f%s"); err == nil {
-				r.when, r.subject, _ = strings.Cut(out, "\x1f")
-			}
-			rows[i] = r
-		}
-
-		res := <-ch
-		prErr = res.err
-		for i := range rows {
-			if pr, ok := res.prs[rows[i].wt.branch]; ok && rows[i].wt.branch != "" {
-				rows[i].pr = &pr
+			if pr, ok := prs[wt.branch]; ok && wt.branch != "" {
+				l.prs[i].pr = &pr
 				if pr.State == "OPEN" {
-					n, known := prBehind(rows[i].wt.path, pr.HeadRefOid)
-					if known { // the PR head is fresher than the remote-tracking ref
-						rows[i].status.behind = n
-					}
-					rows[i].status.remoteNew = !known
+					l.prs[i].behind, l.prs[i].known = prBehind(wt.path, pr.HeadRefOid)
 				}
 			}
 		}
-	}
+		ch <- l
+	}()
+	return ch
+}
 
-	if isatty.IsTerminal(os.Stderr.Fd()) {
-		_ = spinner.New().Title("Loading worktrees...").Output(os.Stderr).Action(collect).Run()
-	} else {
-		collect()
+// liveTable is the worktree table while the PRs load: the PR column shows a
+// spinner until they arrive, then the PRs and the commits pushed to them.
+type liveTable struct {
+	rows   []row
+	width  int
+	prs    <-chan prLookup
+	spin   bspinner.Model
+	loaded bool
+	err    string
+}
+
+func newLiveTable(width int, prs <-chan prLookup) liveTable {
+	return liveTable{width: width, prs: prs, spin: bspinner.New(bspinner.WithSpinner(bspinner.MiniDot), bspinner.WithStyle(grayStyle))}
+}
+
+func (t *liveTable) init() tea.Cmd {
+	prs := t.prs
+	return tea.Batch(t.spin.Tick, func() tea.Msg { return <-prs })
+}
+
+// update takes the PRs or a spinner tick.
+func (t *liveTable) update(msg tea.Msg) tea.Cmd {
+	switch msg := msg.(type) {
+	case prLookup:
+		for i, p := range msg.prs {
+			if p.pr == nil {
+				continue
+			}
+			t.rows[i].pr = p.pr
+			if p.pr.State == "OPEN" {
+				if p.known { // the PR head is fresher than the remote-tracking ref
+					t.rows[i].status.behind = p.behind
+				}
+				t.rows[i].status.remoteNew = !p.known
+			}
+		}
+		t.loaded, t.err = true, msg.err
+	case bspinner.TickMsg:
+		if !t.loaded {
+			var cmd tea.Cmd
+			t.spin, cmd = t.spin.Update(msg)
+			return cmd
+		}
 	}
-	// Print after the spinner, which clears its line on exit.
-	if prErr != "" {
-		fmt.Fprintln(os.Stderr, grayStyle.Render("PR state unavailable: "+prErr))
+	return nil
+}
+
+func (t *liveTable) render() (string, []string) {
+	frame := ""
+	if !t.loaded {
+		frame = t.spin.View()
 	}
-	return rows
+	return renderTable(t.rows, t.width, frame)
+}
+
+// listText is the table of gh wt -l, marking the current worktree.
+func (t *liveTable) listText() string {
+	header, lines := t.render()
+	var b strings.Builder
+	b.WriteString(header + "\n")
+	for i, line := range lines {
+		mark := " "
+		if t.rows[i].current {
+			mark = greenStyle.Render(iconCurrent)
+		}
+		b.WriteString(mark + " " + line + "\n")
+	}
+	return b.String()
+}
+
+func (t *liveTable) reportErr() {
+	if t.err != "" {
+		fmt.Fprintln(os.Stderr, grayStyle.Render("PR state unavailable: "+t.err))
+	}
+}
+
+// listModel draws gh wt -l and quits once the PRs are in.
+type listModel struct{ liveTable }
+
+func (m *listModel) Init() tea.Cmd { return m.init() }
+
+func (m *listModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	cmd := m.update(msg)
+	if m.loaded {
+		return m, tea.Quit
+	}
+	return m, cmd
+}
+
+// View ends with a newline: bubbletea erases the last line when it stops.
+func (m *listModel) View() string { return m.listText() }
+
+// picker runs the worktree select while the PRs load.
+type picker struct {
+	liveTable
+	form    *huh.Form
+	sel     *huh.Select[string]
+	options []huh.Option[string] // the select's own slice: a new Key shows on its next update
+	held    bool                 // a refresh was skipped while a filter was in use
+}
+
+type refreshMsg struct{}
+
+func newPicker(rows []row, width int, prs <-chan prLookup, selected *string) *picker {
+	p := &picker{liveTable: newLiveTable(width, prs)}
+	p.rows = rows
+	for _, r := range rows {
+		if !r.current {
+			p.options = append(p.options, huh.NewOption("", r.wt.path))
+		}
+	}
+	p.sel = huh.NewSelect[string]().Title("Select a worktree:").Options(p.options...).Value(selected)
+	p.refresh()
+	p.form = huh.NewForm(huh.NewGroup(p.sel))
+	p.form.SubmitCmd, p.form.CancelCmd = tea.Quit, tea.Interrupt
+	return p
+}
+
+func (p *picker) Init() tea.Cmd { return tea.Batch(p.form.Init(), p.init()) }
+
+func (p *picker) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	cmd := p.update(msg)
+	// A filter shows copies of the options, which keep the old lines while the
+	// header would change, so the table waits until the filter is cleared.
+	p.held = filtering(p.sel)
+	if !p.held {
+		p.refresh()
+	}
+	form, formCmd := p.form.Update(msg)
+	p.form = form.(*huh.Form)
+	if p.held && !filtering(p.sel) { // the filter was just cleared
+		formCmd = tea.Batch(formCmd, func() tea.Msg { return refreshMsg{} })
+	}
+	return p, tea.Batch(cmd, formCmd)
+}
+
+func (p *picker) View() string { return p.form.View() }
+
+// refresh writes the table into the select: the other worktrees as options and,
+// as huh has no disabled options, the current one into the description under
+// the header, where it shows but can't be selected.
+func (p *picker) refresh() {
+	header, lines := p.render()
+	description := header
+	i := 0
+	for j, r := range p.rows {
+		if r.current {
+			description += "\n" + grayStyle.Render(iconCurrent+" "+ansi.Strip(lines[j]))
+			continue
+		}
+		p.options[i].Key = lines[j]
+		i++
+	}
+	p.sel.Description(description)
+}
+
+// filtering reports whether a filter is being typed or narrows the options.
+func filtering(s *huh.Select[string]) bool {
+	if s.GetFiltering() {
+		return true
+	}
+	for _, b := range s.KeyBinds() { // enabled while a typed filter narrows the list
+		if b.Help().Desc == "clear filter" {
+			return b.Enabled()
+		}
+	}
+	return false
 }
 
 // renderTable aligns rows under a header. The header starts with 2 cells of
 // indent, matching the caller's mark in the list or huh's cursor in the picker;
 // lines are returned without it. With maxWidth > 0 the path, subject and branch
-// columns shrink, in that order, so every line fits.
-func renderTable(rows []row, maxWidth int) (string, []string) {
+// columns shrink, in that order, so every line fits. A spinner frame stands in
+// for the PR of each branch while the PRs load.
+func renderTable(rows []row, maxWidth int, loading string) (string, []string) {
 	const colBranch, colSubject, colPath = 0, 3, 5
 	titles := []string{"BRANCH", "CHANGES", "PR", "LAST COMMIT", "", "PATH"}
 	cells := make([][]string, len(rows))
 	for i, r := range rows {
+		pr := prCell(r.pr)
+		if loading != "" && r.wt.branch != "" {
+			pr = loading
+		}
 		cells[i] = []string{
 			ansi.Truncate(branchCell(r.wt), 28, "…"),
 			statusCell(r.status),
-			prCell(r.pr),
+			pr,
 			ansi.Truncate(r.subject, 64, "…"),
 			grayStyle.Render(r.when),
 			grayStyle.Render(tilde(r.wt.path)),
