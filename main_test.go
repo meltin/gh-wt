@@ -881,7 +881,61 @@ func TestListModelQuitsWithPRs(t *testing.T) {
 	if _, cmd := m.Update(l); cmd == nil || cmd() != tea.Quit() {
 		t.Error("should quit once the PRs are in")
 	}
-	if v := ansi.Strip(m.View()); !strings.Contains(v, "#101 merged") || !strings.HasSuffix(v, "\n") {
-		t.Errorf("view:\n%q", v)
+	if v := m.View(); v != "" {
+		t.Errorf("the live region should be cleared for the final print, got %q", v)
+	}
+	if v := ansi.Strip(m.listText()); !strings.Contains(v, "#101 merged") || !strings.HasSuffix(v, "\n") {
+		t.Errorf("final table:\n%q", v)
+	}
+}
+
+// The lookup's result comes through the channel the table was given.
+func TestLiveTableReceivesLookup(t *testing.T) {
+	initStyles()
+	rows, l := pickerRows()
+	ch := make(chan prLookup, 1)
+	ch <- l
+	m := &listModel{newLiveTable(120, ch)}
+	m.rows = rows
+	batch, ok := m.Init()().(tea.BatchMsg)
+	if !ok {
+		t.Fatal("Init should batch the spinner and the lookup")
+	}
+	for _, cmd := range batch {
+		if got, ok := cmd().(prLookup); ok {
+			if _, quit := m.Update(got); quit == nil || !m.loaded {
+				t.Error("the lookup should fill the table and quit")
+			}
+			return
+		}
+	}
+	t.Fatal("no cmd returned the lookup")
+}
+
+// In a narrow terminal the PRs make the lines wrap; huh must re-measure so no
+// row disappears and the cursor stays on its row.
+func TestPickerNarrowFill(t *testing.T) {
+	initStyles()
+	rows, l := pickerRows()
+	for i := range rows {
+		rows[i].wt.branch = "williammartin-multiaccount-" + rows[i].wt.branch
+		rows[i].wt.path = "/private/tmp/demo/cli/.wt/" + rows[i].wt.branch
+		rows[i].subject = "Merge pull request #14976 from cli/bagtoad/triage-ghmock-skill"
+		rows[i].when = "30 hours ago"
+	}
+	var selected string
+	p := newPicker(rows, 72-3, nil, &selected)
+	p.Init()
+	p.Update(tea.WindowSizeMsg{Width: 72, Height: 40})
+	p.Update(key("down"))
+	p.Update(l)
+	v := ansi.Strip(p.View())
+	for _, b := range []string{"#101", "#102", "#103"} {
+		if !strings.Contains(v, b) {
+			t.Errorf("%q vanished after the PRs filled in:\n%s", b, v)
+		}
+	}
+	if selected != rows[2].wt.path {
+		t.Errorf("selected = %q, want %q", selected, rows[2].wt.path)
 	}
 }

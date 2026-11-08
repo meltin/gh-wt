@@ -1016,13 +1016,39 @@ func listWorktrees() {
 		return
 	}
 	m := &listModel{t}
-	if _, err := tea.NewProgram(m, tea.WithOutput(os.Stdout), tea.WithInput(nil)).Run(); err != nil {
+	restore := noEcho()
+	_, err = tea.NewProgram(m, tea.WithOutput(os.Stdout), tea.WithInput(nil)).Run()
+	restore()
+	if err != nil {
 		if errors.Is(err, tea.ErrInterrupted) {
 			os.Exit(130)
 		}
 		fail(err.Error())
 	}
+	// Printed after the live region is cleared, so it wraps like any output
+	// instead of being cut at the terminal width.
+	fmt.Print(m.listText())
 	m.reportErr()
+}
+
+// noEcho stops the terminal from echoing keys typed while the table is drawn
+// in place, which would push it down; the keys still reach the shell
+// afterwards. It returns the function that restores the terminal.
+func noEcho() func() {
+	stty := func(args ...string) (string, error) {
+		cmd := exec.Command("stty", args...)
+		cmd.Stdin = os.Stdin
+		out, err := cmd.Output()
+		return strings.TrimSpace(string(out)), err
+	}
+	saved, err := stty("-g")
+	if err != nil {
+		return func() {}
+	}
+	if _, err := stty("-echo"); err != nil {
+		return func() {}
+	}
+	return func() { _, _ = stty(saved) }
 }
 
 // spin runs fn behind a spinner on stderr when that's a terminal.
@@ -1171,8 +1197,15 @@ func (m *listModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-// View ends with a newline: bubbletea erases the last line when it stops.
-func (m *listModel) View() string { return m.listText() }
+// View is empty once the PRs are in, which clears the live region for the
+// final print. It ends with a newline, as bubbletea erases the last line when
+// it stops.
+func (m *listModel) View() string {
+	if m.loaded {
+		return ""
+	}
+	return m.listText()
+}
 
 // picker runs the worktree select while the PRs load.
 type picker struct {
@@ -1181,6 +1214,8 @@ type picker struct {
 	sel     *huh.Select[string]
 	options []huh.Option[string] // the select's own slice: a new Key shows on its next update
 	held    bool                 // a refresh was skipped while a filter was in use
+	filled  bool                 // the PRs are in the select
+	size    tea.WindowSizeMsg
 }
 
 type refreshMsg struct{}
@@ -1203,6 +1238,9 @@ func newPicker(rows []row, width int, prs <-chan prLookup, selected *string) *pi
 func (p *picker) Init() tea.Cmd { return tea.Batch(p.form.Init(), p.init()) }
 
 func (p *picker) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if size, ok := msg.(tea.WindowSizeMsg); ok {
+		p.size = size
+	}
 	cmd := p.update(msg)
 	// A filter shows copies of the options, which keep the old lines while the
 	// header would change, so the table waits until the filter is cleared.
@@ -1214,6 +1252,14 @@ func (p *picker) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	p.form = form.(*huh.Form)
 	if p.held && !filtering(p.sel) { // the filter was just cleared
 		formCmd = tea.Batch(formCmd, func() tea.Msg { return refreshMsg{} })
+	}
+	if !p.held && p.loaded && !p.filled {
+		// The PRs widen the lines, which may now wrap, and huh measures its
+		// height only on a resize: give it the size again.
+		p.filled = true
+		form, sizeCmd := p.form.Update(p.size)
+		p.form = form.(*huh.Form)
+		formCmd = tea.Batch(formCmd, sizeCmd)
 	}
 	return p, tea.Batch(cmd, formCmd)
 }
