@@ -37,6 +37,8 @@ gh-wt は [k1LoW/git-wt](https://github.com/k1LoW/git-wt) にならっていま�
 
 `gh wt` は現在の worktree 以外を一覧にして、選んだ worktree に移動します。`gh wt -l` は、すべての worktree を同じ表で出力します。
 
+![gh wt で worktree を選ぶ](docs/demo/select.gif)
+
 | 列          | 内容                                                                                                  |
 | ----------- | ----------------------------------------------------------------------------------------------------- |
 | BRANCH      | ブランチ名（最大 28 セル）、または `(detached)`                                                       |
@@ -90,6 +92,8 @@ $ gh wt --orphan gh-pages
 ### pull request を開く
 
 `gh wt -p` は、リポジトリで開いている pull request（フォークからのものも含む）を一覧にして、選んだものを worktree で開きます。`gh wt <branch>` と同じく、worktree があればそこへ移動し、なければ作ります。
+
+![gh wt -p で pull request を開く](docs/demo/pr.gif)
 
 ``` console
 $ gh wt -p          # 一覧から選ぶ

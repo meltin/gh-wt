@@ -37,6 +37,8 @@ gh-wt follows [k1LoW/git-wt](https://github.com/k1LoW/git-wt): the same target r
 
 `gh wt` shows the other worktrees and moves you to the one you pick; `gh wt -l` prints the same table for all of them.
 
+![Picking a worktree with gh wt](docs/demo/select.gif)
+
 | Column      | Content                                                                                 |
 | ----------- | --------------------------------------------------------------------------------------- |
 | BRANCH      | Branch name (up to 28 cells), or `(detached)`                                           |
@@ -90,6 +92,8 @@ Flags may come before or after the names. `-b` also takes `--branch=NAME` or `-b
 ### Opening pull requests
 
 `gh wt -p` lists the repository's open pull requests, including ones from forks, and opens the selected one in a worktree. Like `gh wt <branch>`, it moves to the worktree if there is one and creates it otherwise.
+
+![Opening a pull request with gh wt -p](docs/demo/pr.gif)
 
 ``` console
 $ gh wt -p          # select from the list
