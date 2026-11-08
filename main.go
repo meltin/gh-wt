@@ -307,8 +307,7 @@ func selectWorktree() {
 	spin("Loading worktrees...", func() { rows, prWidth = localRows(wts, current), prColumnWidth() })
 
 	var selected string
-	p := newPicker(rows, width, prs, &selected)
-	p.prWidth = prWidth
+	p := newPicker(rows, width, prWidth, prs, &selected)
 	_, err := tea.NewProgram(p, tea.WithOutput(os.Stderr), tea.WithReportFocus()).Run()
 	if err != nil || p.form.State != huh.StateCompleted {
 		fmt.Fprintln(os.Stderr, grayStyle.Render("Operation cancelled."))
@@ -1009,8 +1008,10 @@ func listWorktrees() {
 	// background job waits for the PRs as before.
 	live := err == nil && len(wts)+2 <= height && foreground()
 	spin("Loading worktrees...", func() {
-		t.rows, t.prWidth = localRows(wts, currentRoot()), prColumnWidth()
-		if !live {
+		t.rows = localRows(wts, currentRoot())
+		if live {
+			t.prWidth = prColumnWidth()
+		} else { // printed once with the PRs in: no room to keep
 			t.update(<-t.prs)
 		}
 	})
@@ -1250,9 +1251,9 @@ type picker struct {
 
 type refreshMsg struct{}
 
-func newPicker(rows []row, width int, prs <-chan prLookup, selected *string) *picker {
+func newPicker(rows []row, width, prWidth int, prs <-chan prLookup, selected *string) *picker {
 	p := &picker{liveTable: newLiveTable(width, prs)}
-	p.rows = rows
+	p.rows, p.prWidth = rows, prWidth
 	for _, r := range rows {
 		if !r.current {
 			p.options = append(p.options, huh.NewOption("", r.wt.path))

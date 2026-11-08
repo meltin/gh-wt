@@ -804,7 +804,7 @@ func pickerRows() ([]row, prLookup) {
 func startPicker(t *testing.T, rows []row) (*picker, *string) {
 	t.Helper()
 	var selected string
-	p := newPicker(rows, 120, nil, &selected)
+	p := newPicker(rows, 120, 0, nil, &selected)
 	p.Init()
 	p.Update(tea.WindowSizeMsg{Width: 130, Height: 40})
 	return p, &selected
@@ -924,7 +924,7 @@ func TestPickerNarrowFill(t *testing.T) {
 		rows[i].when = "30 hours ago"
 	}
 	var selected string
-	p := newPicker(rows, 72-3, nil, &selected)
+	p := newPicker(rows, 72-3, 0, nil, &selected)
 	p.Init()
 	p.Update(tea.WindowSizeMsg{Width: 72, Height: 40})
 	p.Update(key("down"))
@@ -945,7 +945,7 @@ func TestPickerLookupBeforeSize(t *testing.T) {
 	initStyles()
 	rows, l := pickerRows()
 	var selected string
-	p := newPicker(rows, 120, nil, &selected)
+	p := newPicker(rows, 120, 0, nil, &selected)
 	p.Init()
 	p.Update(l)
 	if v := ansi.Strip(p.View()); !strings.Contains(v, "#103 merged") {
