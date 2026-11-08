@@ -939,3 +939,20 @@ func TestPickerNarrowFill(t *testing.T) {
 		t.Errorf("selected = %q, want %q", selected, rows[2].wt.path)
 	}
 }
+
+// PRs that arrive before the window size don't measure the form at size 0.
+func TestPickerLookupBeforeSize(t *testing.T) {
+	initStyles()
+	rows, l := pickerRows()
+	var selected string
+	p := newPicker(rows, 120, nil, &selected)
+	p.Init()
+	p.Update(l)
+	if p.filled {
+		t.Error("re-measured without a size")
+	}
+	p.Update(tea.WindowSizeMsg{Width: 130, Height: 40})
+	if v := ansi.Strip(p.View()); !strings.Contains(v, "#101 merged") || !strings.Contains(v, "#103 merged") {
+		t.Errorf("view:\n%s", v)
+	}
+}

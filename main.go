@@ -1002,8 +1002,9 @@ func listWorktrees() {
 		t.width = width
 	}
 	// The table is drawn first and redrawn when the PRs arrive, which needs all
-	// of it on screen; a taller one (or a pipe) waits for the PRs as before.
-	live := err == nil && len(wts)+2 <= height
+	// of it on screen and the terminal to ourselves; a taller one, a pipe or a
+	// background job waits for the PRs as before.
+	live := err == nil && len(wts)+2 <= height && foreground()
 	spin("Loading worktrees...", func() {
 		t.rows = localRows(wts, currentRoot())
 		if !live {
@@ -1253,7 +1254,7 @@ func (p *picker) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if p.held && !filtering(p.sel) { // the filter was just cleared
 		formCmd = tea.Batch(formCmd, func() tea.Msg { return refreshMsg{} })
 	}
-	if !p.held && p.loaded && !p.filled {
+	if !p.held && p.loaded && !p.filled && p.size.Width > 0 { // no size yet: huh measures when it comes
 		// The PRs widen the lines, which may now wrap, and huh measures its
 		// height only on a resize: give it the size again.
 		p.filled = true
