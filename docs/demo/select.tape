@@ -6,13 +6,14 @@ Type "gh wt"
 Sleep 400ms
 Enter
 Wait+Screen@20s /LAST COMMIT/
-Sleep 1500ms
+Sleep 500ms
 Down
-Sleep 600ms
+Sleep 500ms
 Down
-Sleep 600ms
+Sleep 500ms
 Down
-Sleep 1s
+Wait+Screen@20s /#14846/
+Sleep 2s
 Enter
 Sleep 1500ms
 Type "git status -sb"

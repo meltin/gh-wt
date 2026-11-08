@@ -2,6 +2,8 @@
 
 `git worktree` を手軽に使うための GitHub CLI 拡張です。各 worktree と pull request の状態を一覧で確認できます。
 
+GitHub の応答を待ちません。worktree は git が読み終えた時点ですぐに表示され、pull request は `gh` の応答が届いたところで埋まります。
+
 [English](README.md)
 
 ## 使い方
@@ -47,6 +49,7 @@ gh-wt は [k1LoW/git-wt](https://github.com/k1LoW/git-wt) にならっていま�
 | LAST COMMIT | 最後のコミットの件名と、どれくらい前か                                                                      |
 | PATH        | worktree のパス。ホームは `~` で表示                                                                  |
 
+- 表は、git が worktree を読み終えた時点ですぐに出ます。PR 列は `gh` の応答が届くまでスピナーを表示し、届いたら他の列を動かさずに埋まります。その間もカーソルを動かしたり選んだりできます。パイプに出すときの `gh wt -l` は、応答を待ってから一度に出力します。
 - 開いている PR があるブランチでは、PR に push されたのに worktree にまだないコミットも、fetch せずに `↓` に数えます。`↓N` は、そうしたコミットがあるものの、まだ fetch していないので数えられないことを表します。
 - 選択画面では、現在の worktree がヘッダーの下に灰色で表示され、選べません。
 - 表が端末より広いときは、PATH、コミットの件名、BRANCH の順に短くします。

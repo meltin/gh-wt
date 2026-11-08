@@ -2,6 +2,8 @@
 
 A GitHub CLI extension that makes `git worktree` simple, with the state of every worktree and pull request at a glance.
 
+It doesn't wait for GitHub: the worktrees show up as soon as git has read them, and their pull requests fill in when `gh` answers.
+
 [日本語](README.ja.md)
 
 ## Usage
@@ -47,6 +49,7 @@ gh-wt follows [k1LoW/git-wt](https://github.com/k1LoW/git-wt): the same target r
 | LAST COMMIT | Subject and relative time                                                               |
 | PATH        | Worktree path, `~` for home                                                             |
 
+- The table appears as soon as git has read the worktrees. The PR column shows a spinner until `gh` answers, then fills in without moving the other columns, and you can move or pick in the meantime. Piped, `gh wt -l` waits and prints once.
 - For a branch with an open PR, `↓` also counts commits pushed to the PR that the worktree doesn't have yet, without fetching. `↓N` means there are such commits, but they haven't been fetched, so they can't be counted.
 - In the picker, the current worktree is shown grayed out under the header and can't be selected.
 - When the table is wider than the terminal, PATH, the commit subject and BRANCH are shortened, in that order.
