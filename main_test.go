@@ -948,8 +948,8 @@ func TestPickerLookupBeforeSize(t *testing.T) {
 	p := newPicker(rows, 120, nil, &selected)
 	p.Init()
 	p.Update(l)
-	if p.filled {
-		t.Error("re-measured without a size")
+	if v := ansi.Strip(p.View()); !strings.Contains(v, "#103 merged") {
+		t.Errorf("rows gone before the size came:\n%s", v)
 	}
 	p.Update(tea.WindowSizeMsg{Width: 130, Height: 40})
 	if v := ansi.Strip(p.View()); !strings.Contains(v, "#101 merged") || !strings.Contains(v, "#103 merged") {
