@@ -1049,7 +1049,13 @@ func noEcho() func() {
 	if _, err := stty("-echo"); err != nil {
 		return func() {}
 	}
-	return func() { _, _ = stty(saved) }
+	return func() {
+		// After Ctrl+Z and bg the shell has put its own settings back, and a
+		// restore from the background would be stopped (SIGTTOU).
+		if foreground() {
+			_, _ = stty(saved)
+		}
+	}
 }
 
 // spin runs fn behind a spinner on stderr when that's a terminal.
