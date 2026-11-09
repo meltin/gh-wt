@@ -529,12 +529,12 @@ func selectPR() {
 	}
 	wts := liveWorktrees()
 	current := currentRoot()
-	here := ""
+	var here worktree
 	if j := slices.IndexFunc(wts, func(wt worktree) bool { return samePath(wt.path, current) }); j >= 0 {
-		here = wts[j].branch
+		here = wts[j]
 	}
-	header, lines := renderPRTable(prs, wts, def, width)
-	description, options := prOptions(prs, header, lines, def, here)
+	header, lines := renderPRTable(prs, wts, here, def, width)
+	description, options := prOptions(prs, header, lines, def, here.branch)
 	if len(options) == 0 {
 		fail("no other open pull requests")
 	}
@@ -554,18 +554,16 @@ func selectPR() {
 }
 
 // renderPRTable lays out PRs with the worktree's CHANGES when one exists, so
-// it's clear whether selecting moves to it or creates it.
-func renderPRTable(prs []pullRequest, wts []worktree, def string, maxWidth int) (string, []string) {
+// it's clear whether selecting moves to it or creates it. When no PR is on the
+// current worktree here's branch, it gets a line of its own after the PRs'.
+func renderPRTable(prs []pullRequest, wts []worktree, here worktree, def string, maxWidth int) (string, []string) {
 	const colTitle, colBranch = 2, 3
 	cells := make([][]string, len(prs))
 	for i, pr := range prs {
 		changes := ""
 		name := prBranch(pr, def)
 		if j := slices.IndexFunc(wts, func(wt worktree) bool { return wt.branch == name }); j >= 0 {
-			var s status
-			if out, err := git("--no-optional-locks", "-C", wts[j].path, "status", "--porcelain=v2", "--branch"); err == nil {
-				s = parseStatus(out)
-			}
+			s := worktreeStatus(wts[j].path)
 			n, known := prBehind(wts[j].path, pr.HeadRefOid)
 			s.behind, s.remoteNew = max(s.behind, n), !known
 			changes = statusCell(s)
@@ -583,22 +581,26 @@ func renderPRTable(prs []pullRequest, wts []worktree, def string, maxWidth int) 
 			grayStyle.Render(humanize.Time(pr.UpdatedAt)),
 		}
 	}
+	if here.path != "" && !slices.ContainsFunc(prs, func(pr pullRequest) bool { return prBranch(pr, def) == here.branch }) {
+		cells = append(cells, []string{statusCell(worktreeStatus(here.path)), "", "", ansi.Truncate(branchCell(here), 28, "…"), "", ""})
+	}
 	return layoutTable([]string{"WORKTREE", "PR", "TITLE", "BRANCH", "AUTHOR", "UPDATED"}, cells, maxWidth, []shrinkStep{
 		{colTitle, 30}, {colBranch, 20}, {colTitle, 10}, {colBranch, 10},
 	}, nil)
 }
 
 // prOptions is the select's description and options: as in the worktree picker,
-// the PR of the branch here goes under the header, where it can't be selected.
+// the line of the branch here (a PR's, or the extra one after them) goes under
+// the header, where it can't be selected.
 func prOptions(prs []pullRequest, header string, lines []string, def, here string) (string, []huh.Option[int]) {
 	description := header
 	var options []huh.Option[int]
-	for i, pr := range prs {
-		if prBranch(pr, def) == here {
-			description += "\n" + currentLine(lines[i])
+	for i, line := range lines {
+		if i >= len(prs) || prBranch(prs[i], def) == here {
+			description += "\n" + currentLine(line)
 			continue
 		}
-		options = append(options, huh.NewOption(lines[i], i))
+		options = append(options, huh.NewOption(line, i))
 	}
 	return description, options
 }
@@ -1102,15 +1104,22 @@ func localRows(wts []worktree, current string) []row {
 	rows := make([]row, len(wts))
 	for i, wt := range wts {
 		r := row{wt: wt, current: samePath(wt.path, current)}
-		if out, err := git("--no-optional-locks", "-C", wt.path, "status", "--porcelain=v2", "--branch"); err == nil {
-			r.status = parseStatus(out)
-		}
+		r.status = worktreeStatus(wt.path)
 		if out, err := git("-C", wt.path, "log", "-1", "--format=%cr\x1f%s"); err == nil {
 			r.when, r.subject, _ = strings.Cut(out, "\x1f")
 		}
 		rows[i] = r
 	}
 	return rows
+}
+
+// worktreeStatus reads the worktree's git status, empty when git fails.
+func worktreeStatus(path string) status {
+	out, err := git("--no-optional-locks", "-C", path, "status", "--porcelain=v2", "--branch")
+	if err != nil {
+		return status{}
+	}
+	return parseStatus(out)
 }
 
 // prRef is a PR number in a subject, as in "(#123)" or "Merge pull request #123".
