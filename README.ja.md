@@ -94,7 +94,7 @@ $ gh wt --orphan gh-pages
 
 ### pull request を開く
 
-`gh wt -p` は、リポジトリで開いている pull request（フォークからのものも含む）を一覧にして、選んだものを worktree で開きます。`gh wt <branch>` と同じく、worktree があればそこへ移動し、なければ作ります。
+`gh wt -p` は、リポジトリで開いている pull request（フォークからのものも含む）を一覧にして、選んだものを worktree で開きます。`gh wt <branch>` と同じく、worktree があればそこへ移動し、なければ作ります。現在の worktree は、PR があればその PR とともにヘッダーの下に灰色で表示され、選べません。`gh wt -p <number>` で現在の worktree の PR を指定すると、その worktree を PR の最新に更新します。
 
 ![gh wt -p で pull request を開く](docs/demo/pr.gif)
 
