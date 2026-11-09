@@ -103,7 +103,7 @@ const (
 
 // Styles are built in initStyles, after the default renderer is chosen,
 // because a lipgloss style keeps the renderer it was created with.
-var grayStyle, greenStyle, yellowStyle, cyanStyle, redStyle, magentaStyle, underlineStyle lipgloss.Style
+var grayStyle, greenStyle, yellowStyle, cyanStyle, redStyle, purpleStyle, underlineStyle lipgloss.Style
 
 func initStyles() {
 	grayStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
@@ -111,7 +111,7 @@ func initStyles() {
 	yellowStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
 	cyanStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
 	redStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
-	magentaStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("5"))
+	purpleStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#A371F7"))
 	underlineStyle = lipgloss.NewStyle().Underline(true).Foreground(lipgloss.Color("7"))
 }
 
@@ -527,16 +527,22 @@ func selectPR() {
 	if w, _, err := term.GetSize(os.Stderr.Fd()); err == nil {
 		width = w - 3 // huh's "┃ " border plus a spare cell
 	}
-	header, lines := renderPRTable(prs, liveWorktrees(), def, width)
-	options := make([]huh.Option[int], len(prs))
-	for i := range prs {
-		options[i] = huh.NewOption(lines[i], i)
+	wts := liveWorktrees()
+	current := currentRoot()
+	var here worktree
+	if j := slices.IndexFunc(wts, func(wt worktree) bool { return samePath(wt.path, current) }); j >= 0 {
+		here = wts[j]
+	}
+	header, lines := renderPRTable(prs, wts, here, def, width)
+	description, options := prOptions(prs, header, lines, def, here.branch)
+	if len(options) == 0 {
+		fail("no other open pull requests")
 	}
 	var selected int
 	err := huh.NewForm(huh.NewGroup(
 		huh.NewSelect[int]().
 			Title("Select a pull request:").
-			Description(header).
+			Description(description).
 			Options(options...).
 			Value(&selected),
 	)).WithOutput(os.Stderr).Run()
@@ -548,18 +554,16 @@ func selectPR() {
 }
 
 // renderPRTable lays out PRs with the worktree's CHANGES when one exists, so
-// it's clear whether selecting moves to it or creates it.
-func renderPRTable(prs []pullRequest, wts []worktree, def string, maxWidth int) (string, []string) {
+// it's clear whether selecting moves to it or creates it. When no PR is on the
+// current worktree here's branch, it gets a line of its own after the PRs'.
+func renderPRTable(prs []pullRequest, wts []worktree, here worktree, def string, maxWidth int) (string, []string) {
 	const colTitle, colBranch = 2, 3
 	cells := make([][]string, len(prs))
 	for i, pr := range prs {
 		changes := ""
 		name := prBranch(pr, def)
 		if j := slices.IndexFunc(wts, func(wt worktree) bool { return wt.branch == name }); j >= 0 {
-			var s status
-			if out, err := git("--no-optional-locks", "-C", wts[j].path, "status", "--porcelain=v2", "--branch"); err == nil {
-				s = parseStatus(out)
-			}
+			s := worktreeStatus(wts[j].path)
 			n, known := prBehind(wts[j].path, pr.HeadRefOid)
 			s.behind, s.remoteNew = max(s.behind, n), !known
 			changes = statusCell(s)
@@ -577,9 +581,33 @@ func renderPRTable(prs []pullRequest, wts []worktree, def string, maxWidth int) 
 			grayStyle.Render(humanize.Time(pr.UpdatedAt)),
 		}
 	}
+	if here.path != "" && !slices.ContainsFunc(prs, func(pr pullRequest) bool { return prBranch(pr, def) == here.branch }) {
+		cells = append(cells, []string{statusCell(worktreeStatus(here.path)), "", "", ansi.Truncate(branchCell(here), 28, "…"), "", ""})
+	}
 	return layoutTable([]string{"WORKTREE", "PR", "TITLE", "BRANCH", "AUTHOR", "UPDATED"}, cells, maxWidth, []shrinkStep{
 		{colTitle, 30}, {colBranch, 20}, {colTitle, 10}, {colBranch, 10},
 	}, nil)
+}
+
+// prOptions is the select's description and options: as in the worktree picker,
+// the line of the branch here (a PR's, or the extra one after them) goes under
+// the header, where it can't be selected.
+func prOptions(prs []pullRequest, header string, lines []string, def, here string) (string, []huh.Option[int]) {
+	description := header
+	var options []huh.Option[int]
+	for i, line := range lines {
+		if i >= len(prs) || prBranch(prs[i], def) == here {
+			description += "\n" + currentLine(line)
+			continue
+		}
+		options = append(options, huh.NewOption(line, i))
+	}
+	return description, options
+}
+
+// currentLine is a picker's table line for the current worktree.
+func currentLine(line string) string {
+	return grayStyle.Render(iconCurrent + " " + ansi.Strip(line))
 }
 
 // openPRs returns the repository's open PRs, including ones from forks.
@@ -1076,15 +1104,22 @@ func localRows(wts []worktree, current string) []row {
 	rows := make([]row, len(wts))
 	for i, wt := range wts {
 		r := row{wt: wt, current: samePath(wt.path, current)}
-		if out, err := git("--no-optional-locks", "-C", wt.path, "status", "--porcelain=v2", "--branch"); err == nil {
-			r.status = parseStatus(out)
-		}
+		r.status = worktreeStatus(wt.path)
 		if out, err := git("-C", wt.path, "log", "-1", "--format=%cr\x1f%s"); err == nil {
 			r.when, r.subject, _ = strings.Cut(out, "\x1f")
 		}
 		rows[i] = r
 	}
 	return rows
+}
+
+// worktreeStatus reads the worktree's git status, empty when git fails.
+func worktreeStatus(path string) status {
+	out, err := git("--no-optional-locks", "-C", path, "status", "--porcelain=v2", "--branch")
+	if err != nil {
+		return status{}
+	}
+	return parseStatus(out)
 }
 
 // prRef is a PR number in a subject, as in "(#123)" or "Merge pull request #123".
@@ -1306,7 +1341,7 @@ func (p *picker) refresh() {
 	i := 0
 	for j, r := range p.rows {
 		if r.current {
-			description += "\n" + grayStyle.Render(iconCurrent+" "+ansi.Strip(lines[j]))
+			description += "\n" + currentLine(lines[j])
 			continue
 		}
 		p.options[i].Key = lines[j]
@@ -1475,7 +1510,7 @@ func prCell(pr *pullRequest) string {
 	icon, word, style := iconPRClosed, "closed", redStyle
 	switch {
 	case pr.State == "MERGED":
-		icon, word, style = iconPRMerged, "merged", magentaStyle
+		icon, word, style = iconPRMerged, "merged", purpleStyle
 	case pr.State == "OPEN" && pr.IsDraft:
 		icon, word, style = iconPRDraft, "draft", grayStyle
 	case pr.State == "OPEN":

@@ -775,7 +775,7 @@ func TestRenderPRTableFits(t *testing.T) {
 		UpdatedAt:   time.Now().Add(-3 * 24 * time.Hour),
 	}}
 	prs[0].Author.Login = "someone"
-	header, lines := renderPRTable(prs, nil, "main", 100)
+	header, lines := renderPRTable(prs, nil, worktree{}, "main", 100)
 	for _, l := range append(lines, header) {
 		if w := ansi.StringWidth(l) + 2; w > 100 {
 			t.Errorf("width %d > 100: %q", w, ansi.Strip(l))
@@ -783,6 +783,39 @@ func TestRenderPRTableFits(t *testing.T) {
 	}
 	if !strings.Contains(ansi.Strip(lines[0]), "#1720 draft") {
 		t.Errorf("draft PR should say so: %q", ansi.Strip(lines[0]))
+	}
+}
+
+func TestPROptionsMoveCurrentUnderHeader(t *testing.T) {
+	prs := []pullRequest{{HeadRefName: "there"}, {HeadRefName: "here"}, {HeadRefName: "other"}}
+	description, options := prOptions(prs, "HEADER", []string{"line0", "line1", "line2"}, "main", "here")
+	if want := "HEADER\n" + iconCurrent + " line1"; ansi.Strip(description) != want {
+		t.Errorf("description = %q, want %q", ansi.Strip(description), want)
+	}
+	// The values stay indexes into prs, so the selected PR is still the right one.
+	if len(options) != 2 || options[0].Value != 0 || options[1].Value != 2 {
+		t.Errorf("options = %v, want PRs 0 and 2", options)
+	}
+}
+
+func TestCurrentWorktreeWithoutPRIsUnderHeader(t *testing.T) {
+	prs := []pullRequest{{Number: 1, HeadRefName: "other"}}
+	here := worktree{path: t.TempDir(), branch: "here"}
+	header, lines := renderPRTable(prs, []worktree{here}, here, "main", 0)
+	if len(lines) != 2 || !strings.Contains(lines[1], "here") {
+		t.Fatalf("want a line for the branch after the PR's: %q", lines)
+	}
+	description, options := prOptions(prs, header, lines, "main", here.branch)
+	if !strings.Contains(ansi.Strip(description), "here") {
+		t.Errorf("the branch should be under the header: %q", ansi.Strip(description))
+	}
+	if len(options) != 1 || options[0].Value != 0 {
+		t.Errorf("options = %v, want only PR 0", options)
+	}
+	// With a PR on the branch, that PR's line is the current one: no extra line.
+	prs = append(prs, pullRequest{Number: 2, HeadRefName: "here"})
+	if _, lines := renderPRTable(prs, []worktree{here}, here, "main", 0); len(lines) != 2 {
+		t.Errorf("no extra line when the branch has a PR: %q", lines)
 	}
 }
 
