@@ -786,6 +786,18 @@ func TestRenderPRTableFits(t *testing.T) {
 	}
 }
 
+func TestPROptionsMoveCurrentUnderHeader(t *testing.T) {
+	prs := []pullRequest{{HeadRefName: "there"}, {HeadRefName: "here"}, {HeadRefName: "other"}}
+	description, options := prOptions(prs, "HEADER", []string{"line0", "line1", "line2"}, "main", "here")
+	if want := "HEADER\n" + iconCurrent + " line1"; ansi.Strip(description) != want {
+		t.Errorf("description = %q, want %q", ansi.Strip(description), want)
+	}
+	// The values stay indexes into prs, so the selected PR is still the right one.
+	if len(options) != 2 || options[0].Value != 0 || options[1].Value != 2 {
+		t.Errorf("options = %v, want PRs 0 and 2", options)
+	}
+}
+
 // pickerRows are three worktrees (the first current) and a PR for each branch.
 func pickerRows() ([]row, prLookup) {
 	rows := []row{

@@ -109,7 +109,7 @@ A target can be a branch name, a worktree directory name relative to the base di
 
 ## Opening pull requests
 
-`gh wt -p` lists the repository's open pull requests and opens the selected one's branch: like `gh wt <branch>`, it moves to the worktree if there is one and creates it otherwise. `gh wt -p <number>` (or `#<number>`, the PR's URL or its branch) opens a PR directly.
+`gh wt -p` lists the repository's open pull requests and opens the selected one's branch: like `gh wt <branch>`, it moves to the worktree if there is one and creates it otherwise. The current worktree's PR is shown grayed out under the header and cannot be selected. `gh wt -p <number>` (or `#<number>`, the PR's URL or its branch) opens a PR directly, and brings the current worktree up to date when given its PR.
 
 | Column   | Content                                                                         |
 | -------- | ------------------------------------------------------------------------------- |

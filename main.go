@@ -527,16 +527,22 @@ func selectPR() {
 	if w, _, err := term.GetSize(os.Stderr.Fd()); err == nil {
 		width = w - 3 // huh's "┃ " border plus a spare cell
 	}
-	header, lines := renderPRTable(prs, liveWorktrees(), def, width)
-	options := make([]huh.Option[int], len(prs))
-	for i := range prs {
-		options[i] = huh.NewOption(lines[i], i)
+	wts := liveWorktrees()
+	current := currentRoot()
+	here := ""
+	if j := slices.IndexFunc(wts, func(wt worktree) bool { return samePath(wt.path, current) }); j >= 0 {
+		here = wts[j].branch
+	}
+	header, lines := renderPRTable(prs, wts, def, width)
+	description, options := prOptions(prs, header, lines, def, here)
+	if len(options) == 0 {
+		fail("no other open pull requests")
 	}
 	var selected int
 	err := huh.NewForm(huh.NewGroup(
 		huh.NewSelect[int]().
 			Title("Select a pull request:").
-			Description(header).
+			Description(description).
 			Options(options...).
 			Value(&selected),
 	)).WithOutput(os.Stderr).Run()
@@ -580,6 +586,26 @@ func renderPRTable(prs []pullRequest, wts []worktree, def string, maxWidth int) 
 	return layoutTable([]string{"WORKTREE", "PR", "TITLE", "BRANCH", "AUTHOR", "UPDATED"}, cells, maxWidth, []shrinkStep{
 		{colTitle, 30}, {colBranch, 20}, {colTitle, 10}, {colBranch, 10},
 	}, nil)
+}
+
+// prOptions is the select's description and options: as in the worktree picker,
+// the PR of the branch here goes under the header, where it can't be selected.
+func prOptions(prs []pullRequest, header string, lines []string, def, here string) (string, []huh.Option[int]) {
+	description := header
+	var options []huh.Option[int]
+	for i, pr := range prs {
+		if prBranch(pr, def) == here {
+			description += "\n" + currentLine(lines[i])
+			continue
+		}
+		options = append(options, huh.NewOption(lines[i], i))
+	}
+	return description, options
+}
+
+// currentLine is a picker's table line for the current worktree.
+func currentLine(line string) string {
+	return grayStyle.Render(iconCurrent + " " + ansi.Strip(line))
 }
 
 // openPRs returns the repository's open PRs, including ones from forks.
@@ -1306,7 +1332,7 @@ func (p *picker) refresh() {
 	i := 0
 	for j, r := range p.rows {
 		if r.current {
-			description += "\n" + grayStyle.Render(iconCurrent+" "+ansi.Strip(lines[j]))
+			description += "\n" + currentLine(lines[j])
 			continue
 		}
 		p.options[i].Key = lines[j]
