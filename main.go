@@ -103,7 +103,7 @@ const (
 
 // Styles are built in initStyles, after the default renderer is chosen,
 // because a lipgloss style keeps the renderer it was created with.
-var grayStyle, greenStyle, yellowStyle, cyanStyle, redStyle, magentaStyle, underlineStyle lipgloss.Style
+var grayStyle, greenStyle, yellowStyle, cyanStyle, redStyle, purpleStyle, underlineStyle lipgloss.Style
 
 func initStyles() {
 	grayStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
@@ -111,7 +111,7 @@ func initStyles() {
 	yellowStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
 	cyanStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
 	redStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
-	magentaStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("5"))
+	purpleStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#A371F7"))
 	underlineStyle = lipgloss.NewStyle().Underline(true).Foreground(lipgloss.Color("7"))
 }
 
@@ -1475,7 +1475,7 @@ func prCell(pr *pullRequest) string {
 	icon, word, style := iconPRClosed, "closed", redStyle
 	switch {
 	case pr.State == "MERGED":
-		icon, word, style = iconPRMerged, "merged", magentaStyle
+		icon, word, style = iconPRMerged, "merged", purpleStyle
 	case pr.State == "OPEN" && pr.IsDraft:
 		icon, word, style = iconPRDraft, "draft", grayStyle
 	case pr.State == "OPEN":
