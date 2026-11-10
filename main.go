@@ -942,11 +942,9 @@ func setUpWorktree(src, path, base string) {
 		copyFiles(src, path, base)
 	}
 
-	hooks, _ := git("config", "--get-all", "wt.hook")
-	for _, hook := range strings.Split(hooks, "\n") {
-		if hook == "" {
-			continue
-		}
+	// -z: a hook may span lines.
+	hooks, _ := exec.Command("git", "config", "-z", "--get-all", "wt.hook").Output()
+	for _, hook := range strings.FieldsFunc(string(hooks), func(r rune) bool { return r == 0 }) {
 		cmd := exec.Command("sh", "-c", hook)
 		cmd.Dir = path
 		cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
