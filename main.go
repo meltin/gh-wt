@@ -339,7 +339,10 @@ func pickerStopped(err error) {
 func switchTo(dir, branch, startPoint string, orphan bool) {
 	_, base := repoBase()
 	wts := liveWorktrees()
-	// -b names a branch only: a directory or path called like it is not a match.
+	// The -b name is looked up as a branch only: a directory or path called
+	// like it is not a match. The directory argument is then looked up as a
+	// branch, a directory under wt.basedir and a path, as git-wt looks it up,
+	// and a worktree found that way is switched to whatever -b says.
 	i := slices.IndexFunc(wts, func(wt worktree) bool { return wt.branch == branch })
 	wt, ok := worktree{}, i >= 0
 	if ok {
