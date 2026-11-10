@@ -436,6 +436,11 @@ func deleteTargets(targets []string, force bool) (cd string, err error) {
 			return "", errors.New("empty target")
 		}
 		wt, ok := findWorktree(wts, base, name)
+		if ok && wt.branch != name { // matched as a directory or path: a branch of that name wins
+			if _, err := git("-C", mainRoot, "show-ref", "--verify", "--quiet", "refs/heads/"+name); err == nil {
+				ok = false
+			}
+		}
 		resolved[i] = target{name, wt, ok}
 	}
 
