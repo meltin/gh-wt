@@ -1116,6 +1116,24 @@ func TestCLICopyUntrackedWithoutIgnored(t *testing.T) {
 	}
 }
 
+// As in git-wt, -b with the directory of an existing worktree switches to that
+// worktree, and the directory is joined to wt.basedir as it is given.
+func TestCLIBranchFlagWithExistingDirectory(t *testing.T) {
+	repo, git, wt := cliRepo(t)
+	if _, stderr, err := wt("feat"); err != nil {
+		t.Fatalf("create: %v\n%s", err, stderr)
+	}
+	if path, stderr, err := wt("-b", "fix/2", "feat"); err != nil || path != filepath.Join(repo, ".wt/feat") {
+		t.Errorf("-b fix/2 feat = %q, want the worktree feat: %v\n%s", path, err, stderr)
+	}
+	if branches := git("branch", "--format=%(refname:short)"); branches != "feat\nmain" {
+		t.Errorf("branches = %q, want no fix/2", branches)
+	}
+	if path, stderr, err := wt("-b", "esc", "../outside"); err != nil || path != filepath.Join(repo, "outside") {
+		t.Errorf("-b esc ../outside = %q, want %q: %v\n%s", path, filepath.Join(repo, "outside"), err, stderr)
+	}
+}
+
 // gitIn returns a function that runs git in repo, fails the test when git
 // does, and returns its output.
 func gitIn(t *testing.T, repo string) func(args ...string) string {
