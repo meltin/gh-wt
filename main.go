@@ -348,8 +348,11 @@ func switchTo(dir, branch, startPoint string, orphan bool) {
 	wt, ok := worktree{}, i >= 0
 	if ok {
 		wt = wts[i]
-	} else {
+	} else if branch == dir {
 		wt, ok = findWorktree(wts, base, dir)
+	} else if wt, ok = findWorktreeAt(wts, base, dir); ok && wt.branch != branch {
+		// -b asked for another branch than the one in that worktree.
+		fail(fmt.Sprintf("worktree %s (%s) already exists (-b only names the branch of a new worktree)", tilde(wt.path), label(wt)))
 	}
 	if ok {
 		if startPoint != "" || orphan {
@@ -359,6 +362,9 @@ func switchTo(dir, branch, startPoint string, orphan bool) {
 		return
 	}
 	path := filepath.Join(base, dir)
+	if !within(path, base) || samePath(path, base) { // "..", which only -b lets past git's branch names
+		fail(fmt.Sprintf("%s is not inside wt.basedir (%s)", tilde(path), tilde(base)))
+	}
 	if err := checkNotNested(wts, path, base); err != nil {
 		fail(err.Error())
 	}
@@ -415,9 +421,19 @@ func findWorktree(wts []worktree, base, name string) (worktree, bool) {
 	if name == "" {
 		return worktree{}, false
 	}
+	if i := slices.IndexFunc(wts, func(wt worktree) bool { return wt.branch == name }); i >= 0 {
+		return wts[i], true
+	}
+	return findWorktreeAt(wts, base, name)
+}
+
+// findWorktreeAt matches name as a directory under base, then as a path.
+func findWorktreeAt(wts []worktree, base, name string) (worktree, bool) {
+	if name == "" {
+		return worktree{}, false
+	}
 	abs, _ := filepath.Abs(name)
 	for _, match := range []func(worktree) bool{
-		func(wt worktree) bool { return wt.branch == name },
 		func(wt worktree) bool { return samePath(wt.path, filepath.Join(base, name)) },
 		func(wt worktree) bool { return samePath(wt.path, abs) },
 	} {
