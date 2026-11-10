@@ -754,21 +754,76 @@ func TestPRBehindNoLazyFetch(t *testing.T) {
 
 func TestPRBranch(t *testing.T) {
 	pr := func(head string, cross bool) pullRequest {
-		p := pullRequest{HeadRefName: head, IsCrossRepository: cross}
+		p := pullRequest{Number: 7, HeadRefName: head, IsCrossRepository: cross}
 		p.HeadRepositoryOwner.Login = "someone"
 		return p
 	}
+	names := prNames{def: "main", origin: "me/proj", local: map[string]pulls{
+		"mine":     {repo: "me/proj", ref: "refs/heads/mine"},        // our own branch, pushed
+		"unpushed": {},                                               // our own branch, no upstream
+		"theirs":   {repo: "Someone/proj", ref: "refs/heads/theirs"}, // gh pr checkout of a fork that can be pushed to
+		"readonly": {repo: "me/proj", ref: "refs/pull/7/head"},       // ... and of one that can't
+		"other-pr": {repo: "me/proj", ref: "refs/pull/8/head"},
+	}}
 	for _, c := range []struct {
 		pr   pullRequest
 		want string
 	}{
 		{pr("feat", false), "feat"},
-		{pr("feat", true), "feat"},
+		{pr("feat", true), "feat"}, // no local branch of that name
 		{pr("main", false), "main"},
 		{pr("main", true), "someone/main"},
+		{pr("mine", false), "mine"},
+		{pr("mine", true), "someone/mine"}, // a stranger's branch named like ours
+		{pr("unpushed", true), "someone/unpushed"},
+		{pr("theirs", true), "theirs"},
+		{pr("readonly", true), "readonly"},
+		{pr("other-pr", true), "someone/other-pr"},
 	} {
-		if got := prBranch(c.pr, "main"); got != c.want {
-			t.Errorf("prBranch(%+v) = %q, want %q", c.pr, got, c.want)
+		if got := names.branch(c.pr); got != c.want {
+			t.Errorf("branch(%s, fork %v) = %q, want %q", c.pr.HeadRefName, c.pr.IsCrossRepository, got, c.want)
+		}
+	}
+	// In a clone of the fork itself, a branch without an upstream is the PR's.
+	names.origin = "someone/proj"
+	if got := names.branch(pr("unpushed", true)); got != "unpushed" {
+		t.Errorf("from the fork's own clone: %q", got)
+	}
+}
+
+// localBranches reads what gh pr checkout writes for a PR from a fork.
+func TestLocalBranches(t *testing.T) {
+	gitEnv(t)
+	repo := t.TempDir()
+	run := gitIn(t, repo)
+	run("init", "-q", "-b", "main")
+	run("commit", "-q", "--allow-empty", "-m", "init")
+	run("remote", "add", "origin", "git@github.com:me/proj.git")
+	for _, b := range []string{"mine", "theirs", "readonly", "feat/plain"} {
+		run("branch", b)
+	}
+	run("config", "branch.mine.remote", "origin")
+	run("config", "branch.mine.merge", "refs/heads/mine")
+	run("config", "branch.theirs.remote", "git@github.com:someone/proj.git")
+	run("config", "branch.theirs.pushRemote", "git@github.com:someone/proj.git")
+	run("config", "branch.theirs.merge", "refs/heads/theirs")
+	run("config", "branch.readonly.remote", "origin")
+	run("config", "branch.readonly.merge", "refs/pull/7/head")
+	t.Chdir(repo)
+	want := map[string]pulls{
+		"main":       {},
+		"mine":       {repo: "me/proj", ref: "refs/heads/mine"},
+		"theirs":     {repo: "someone/proj", ref: "refs/heads/theirs"},
+		"readonly":   {repo: "me/proj", ref: "refs/pull/7/head"},
+		"feat/plain": {},
+	}
+	got := localBranches()
+	if len(got) != len(want) {
+		t.Errorf("got %d branches: %v", len(got), got)
+	}
+	for name, w := range want {
+		if got[name] != w {
+			t.Errorf("%s: %+v, want %+v", name, got[name], w)
 		}
 	}
 }
@@ -783,7 +838,7 @@ func TestRenderPRTableFits(t *testing.T) {
 		UpdatedAt:   time.Now().Add(-3 * 24 * time.Hour),
 	}}
 	prs[0].Author.Login = "someone"
-	header, lines, _ := renderPRTable(prs, nil, worktree{}, "main", 100)
+	header, lines, _ := renderPRTable(prs, nil, worktree{}, prNames{def: "main"}, 100)
 	for _, l := range append(lines, header) {
 		if w := ansi.StringWidth(l) + 2; w > 100 {
 			t.Errorf("width %d > 100: %q", w, ansi.Strip(l))
@@ -819,7 +874,7 @@ func TestCurrentWorktreeIsUnderHeader(t *testing.T) {
 	here := worktree{path: repo, branch: "here"}
 
 	// Without a PR on the branch, it gets a line with its changes after the PR's.
-	header, lines, current := renderPRTable(prs, []worktree{here}, here, "main", 0)
+	header, lines, current := renderPRTable(prs, []worktree{here}, here, prNames{def: "main"}, 0)
 	if len(lines) != 2 || !slices.Equal(current, []bool{false, true}) {
 		t.Fatalf("lines = %q, current = %v", lines, current)
 	}
@@ -836,7 +891,7 @@ func TestCurrentWorktreeIsUnderHeader(t *testing.T) {
 
 	// With a PR on the branch, that PR's line is the current one: no extra line.
 	prs = append(prs, pullRequest{Number: 2, HeadRefName: "here"})
-	_, lines, current = renderPRTable(prs, []worktree{here}, here, "main", 0)
+	_, lines, current = renderPRTable(prs, []worktree{here}, here, prNames{def: "main"}, 0)
 	if len(lines) != 2 || !slices.Equal(current, []bool{false, true}) {
 		t.Fatalf("lines = %q, current = %v", lines, current)
 	}
