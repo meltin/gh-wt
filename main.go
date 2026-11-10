@@ -299,7 +299,7 @@ func selectWorktree() {
 	}
 	width := 0
 	if w, _, err := term.GetSize(os.Stderr.Fd()); err == nil {
-		width = w - 3 // huh's "┃ " border plus a spare cell
+		width = w - pickerMargin
 	}
 	prs := lookupPRs(wts)
 	var rows []row
@@ -315,6 +315,10 @@ func selectWorktree() {
 	p.reportErr()
 	fmt.Println(selected)
 }
+
+// pickerMargin is what a picker's table can't use of the terminal's width:
+// huh's "┃ " border plus a spare cell.
+const pickerMargin = 3
 
 // pickerStopped ends a picker that didn't complete: cancelled by the user, or
 // failed with err (no terminal to draw on, for one).
@@ -539,7 +543,7 @@ func selectPR() {
 
 	width := 0
 	if w, _, err := term.GetSize(os.Stderr.Fd()); err == nil {
-		width = w - 3 // huh's "┃ " border plus a spare cell
+		width = w - pickerMargin
 	}
 	wts := liveWorktrees()
 	current := currentRoot()
@@ -1376,6 +1380,7 @@ func (p *picker) Init() tea.Cmd { return tea.Batch(p.form.Init(), p.init()) }
 func (p *picker) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if size, ok := msg.(tea.WindowSizeMsg); ok {
 		p.size = size
+		p.width = size.Width - pickerMargin // lay the table out again for the new width
 	}
 	cmd := p.update(msg)
 	// A filter shows copies of the options, which keep the old lines while the
