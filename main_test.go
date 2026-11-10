@@ -1062,6 +1062,41 @@ func TestCLICopyUntrackedWithoutIgnored(t *testing.T) {
 	}
 }
 
+// -b is not dropped when the directory is an existing worktree, and the
+// directory can't leave wt.basedir.
+func TestCLIBranchFlagNeedsNewWorktree(t *testing.T) {
+	repo, git, wt := cliRepo(t)
+	if _, stderr, err := wt("-b", "me/feat", "feat"); err != nil {
+		t.Fatalf("create: %v\n%s", err, stderr)
+	}
+	// The same pair again is that worktree.
+	if path, stderr, err := wt("-b", "me/feat", "feat"); err != nil || path != filepath.Join(repo, ".wt/feat") {
+		t.Errorf("-b me/feat feat again: %q, %v\n%s", path, err, stderr)
+	}
+	for _, args := range [][]string{
+		{"-b", "fix/2", "feat"}, // the directory of another branch's worktree
+		{"-b", "new", "main"},   // main is the branch of the main worktree
+	} {
+		out, stderr, err := wt(args...)
+		if err == nil || out != "" || !strings.Contains(stderr, "already exists") {
+			t.Errorf("%v: %q, %v\n%s", args, out, err, stderr)
+		}
+	}
+	// ".." and "." are the main worktree, so they are refused as existing.
+	for dir, want := range map[string]string{"../outside": "not inside wt.basedir", "..": "already exists", ".": "already exists"} {
+		out, stderr, err := wt("-b", "esc", dir)
+		if err == nil || out != "" || !strings.Contains(stderr, want) {
+			t.Errorf("-b esc %s: %q, %v\n%s", dir, out, err, stderr)
+		}
+	}
+	if exists(filepath.Join(repo, "outside")) {
+		t.Error("a worktree was created outside wt.basedir")
+	}
+	if branches := git("branch", "--format=%(refname:short)"); branches != "main\nme/feat" {
+		t.Errorf("branches = %q, want none created", branches)
+	}
+}
+
 // gitIn returns a function that runs git in repo, fails the test when git
 // does, and returns its output.
 func gitIn(t *testing.T, repo string) func(args ...string) string {
