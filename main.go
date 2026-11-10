@@ -122,16 +122,12 @@ type worktree struct {
 }
 
 type pullRequest struct {
-	Number            int    `json:"number"`
-	State             string `json:"state"`
-	IsDraft           bool   `json:"isDraft"`
-	HeadRefName       string `json:"headRefName"`
-	HeadRefOid        string `json:"headRefOid"`
-	IsCrossRepository bool   `json:"isCrossRepository"`
-	HeadRepository    struct {
-		NameWithOwner string `json:"nameWithOwner"`
-	} `json:"headRepository"`
-	// Only for gh wt -p.
+	Number              int    `json:"number"`
+	State               string `json:"state"`
+	IsDraft             bool   `json:"isDraft"`
+	HeadRefName         string `json:"headRefName"`
+	HeadRefOid          string `json:"headRefOid"`
+	IsCrossRepository   bool   `json:"isCrossRepository"`
 	HeadRepositoryOwner struct {
 		Login string `json:"login"`
 	} `json:"headRepositoryOwner"`
@@ -836,6 +832,18 @@ func (n prNames) branch(pr pullRequest) string {
 		return pr.HeadRepositoryOwner.Login + "/" + pr.HeadRefName
 	}
 	return pr.HeadRefName
+}
+
+// holder is the local branch a PR is shown on. A PR of the repository itself
+// goes by its head branch's name. A fork's PR needs a branch that is the PR's:
+// under its own name or, as branch names it, <owner>/<branch>.
+func (n prNames) holder(pr pullRequest) (string, bool) {
+	if !pr.IsCrossRepository {
+		return pr.HeadRefName, true
+	}
+	name := n.branch(pr)
+	p, exists := n.local[name]
+	return name, exists && n.isOf(pr, p)
 }
 
 // isOf reports whether a local branch pulling from p is the fork PR's, going
@@ -1847,7 +1855,7 @@ func parseStatus(out string) status {
 func fetchPRs() (map[string]pullRequest, string) {
 	// The open PRs, however old, and the newest PRs of any state: an open PR
 	// older than those would otherwise be missing here and shown in gh wt -p.
-	const fields = "headRefName,headRefOid,headRepository,isCrossRepository,number,state,isDraft"
+	const fields = "headRefName,headRefOid,headRepositoryOwner,isCrossRepository,number,state,isDraft"
 	type result struct {
 		prs []pullRequest
 		msg string
@@ -1865,17 +1873,18 @@ func fetchPRs() (map[string]pullRequest, string) {
 	if msg != "" {
 		return nil, msg
 	}
-	return prByBranch(append(open, r.prs...), originRepo()), ""
+	return prByBranch(append(open, r.prs...), loadPRNames("")), ""
 }
 
-// prByBranch picks one PR per head branch from prs, which gh lists newest
-// first: the newest, unless an older one is open. PRs whose branch isn't on
-// origin are left out.
-func prByBranch(prs []pullRequest, origin string) map[string]pullRequest {
+// prByBranch picks one PR per local branch from prs, which gh lists newest
+// first: the newest, unless an older one is open. A PR from a fork counts for
+// the local branch that holds it, not for one that only shares its name.
+func prByBranch(prs []pullRequest, names prNames) map[string]pullRequest {
 	m := make(map[string]pullRequest, len(prs))
 	for _, pr := range prs {
-		if prev, ok := m[pr.HeadRefName]; inOrigin(pr, origin) && (!ok || (prev.State != "OPEN" && pr.State == "OPEN")) {
-			m[pr.HeadRefName] = pr
+		branch, held := names.holder(pr)
+		if prev, ok := m[branch]; held && (!ok || (prev.State != "OPEN" && pr.State == "OPEN")) {
+			m[branch] = pr
 		}
 	}
 	return m
@@ -1949,13 +1958,6 @@ func repoOf(url string) string {
 		return ""
 	}
 	return parts[len(parts)-2] + "/" + parts[len(parts)-1]
-}
-
-// inOrigin reports whether the PR's branch can be found on origin: a PR from
-// the same repository, or from origin itself when origin is a fork. A
-// stranger's fork branch that merely shares a local branch's name is not.
-func inOrigin(pr pullRequest, origin string) bool {
-	return !pr.IsCrossRepository || (origin != "" && strings.EqualFold(pr.HeadRepository.NameWithOwner, origin))
 }
 
 func git(args ...string) (string, error) {

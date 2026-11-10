@@ -97,27 +97,40 @@ func TestParseStatusWithoutUpstream(t *testing.T) {
 // One PR per branch: the newest, but an open one wins, and a stranger's fork
 // branch of the same name doesn't count.
 func TestPRByBranch(t *testing.T) {
-	pr := func(number int, state, branch, fork string) pullRequest {
-		p := pullRequest{Number: number, State: state, HeadRefName: branch, IsCrossRepository: fork != ""}
-		p.HeadRepository.NameWithOwner = fork
+	pr := func(number int, state, branch, forkOwner string) pullRequest {
+		p := pullRequest{Number: number, State: state, HeadRefName: branch, IsCrossRepository: forkOwner != ""}
+		p.HeadRepositoryOwner.Login = forkOwner
 		return p
 	}
+	names := prNames{origin: "me/proj", local: map[string]pulls{
+		"feat":          {repo: "me/proj", ref: "refs/heads/feat"},        // ours
+		"done":          {repo: "me/proj", ref: "refs/heads/done"},        // ours
+		"review":        {repo: "someone/proj", ref: "refs/heads/review"}, // a fork's PR, opened with gh wt -p
+		"someone/taken": {repo: "someone/proj", ref: "refs/heads/taken"},  // ... whose name was taken
+		"taken":         {repo: "me/proj", ref: "refs/heads/taken"},       // ours
+		"readonly":      {repo: "me/proj", ref: "refs/pull/2/head"},       // a fork that can't be pushed to
+	}}
 	got := prByBranch([]pullRequest{ // newest first, as gh lists them
-		pr(9, "OPEN", "feat", "someone/proj"),
+		pr(12, "OPEN", "taken", "someone"),
+		pr(11, "OPEN", "review", "someone"),
+		pr(10, "OPEN", "review", "other"), // another fork's branch of that name
+		pr(9, "OPEN", "feat", "someone"),  // a stranger's branch named like ours
 		pr(8, "CLOSED", "feat", ""),
 		pr(7, "OPEN", "feat", ""),
 		pr(6, "OPEN", "feat", ""),
 		pr(5, "MERGED", "done", ""),
 		pr(4, "CLOSED", "done", ""),
-		pr(3, "OPEN", "mine", "me/proj"),
-	}, "me/proj")
-	for branch, want := range map[string]int{"feat": 7, "done": 5, "mine": 3} {
-		if got[branch].Number != want {
-			t.Errorf("%s: PR #%d, want #%d", branch, got[branch].Number, want)
+		pr(3, "OPEN", "unknown", "someone"), // no local branch
+		pr(2, "OPEN", "readonly", "someone"),
+	}, names)
+	want := map[string]int{"feat": 7, "done": 5, "review": 11, "someone/taken": 12, "readonly": 2}
+	for branch, number := range want {
+		if got[branch].Number != number {
+			t.Errorf("%s: PR #%d, want #%d", branch, got[branch].Number, number)
 		}
 	}
-	if len(got) != 3 {
-		t.Errorf("got %d branches, want 3", len(got))
+	if len(got) != len(want) {
+		t.Errorf("got %d branches, want %d: %v", len(got), len(want), got)
 	}
 }
 
@@ -685,7 +698,7 @@ func TestPRBehind(t *testing.T) {
 	}
 }
 
-func TestOriginRepoAndInOrigin(t *testing.T) {
+func TestOriginRepo(t *testing.T) {
 	gitEnv(t)
 	repo := t.TempDir()
 	if out, err := exec.Command("git", "-C", repo, "init", "-q").CombinedOutput(); err != nil {
@@ -699,23 +712,6 @@ func TestOriginRepoAndInOrigin(t *testing.T) {
 		}
 		if got := originRepo(); got != "me/fork" {
 			t.Errorf("originRepo(%s) = %q", url, got)
-		}
-	}
-	pr := func(cross bool, head string) pullRequest {
-		p := pullRequest{IsCrossRepository: cross}
-		p.HeadRepository.NameWithOwner = head
-		return p
-	}
-	for _, c := range []struct {
-		pr   pullRequest
-		want bool
-	}{
-		{pr(false, "up/proj"), true}, // same repository
-		{pr(true, "Me/Fork"), true},  // from origin, which is a fork
-		{pr(true, "someone/fork"), false},
-	} {
-		if got := inOrigin(c.pr, "me/fork"); got != c.want {
-			t.Errorf("inOrigin(%+v) = %v", c.pr, got)
 		}
 	}
 }
