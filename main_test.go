@@ -61,6 +61,126 @@ u UU N... 100644 100644 100644 100644 aaa bbb ccc conflict.go
 	}
 }
 
+// A worktree git can't read is not shown as clean.
+func TestUnknownStatus(t *testing.T) {
+	initStyles()
+	gitEnv(t)
+	s := worktreeStatus(filepath.Join(t.TempDir(), "missing"))
+	if !s.unknown {
+		t.Fatalf("status = %+v, want unknown", s)
+	}
+	if got := ansi.Strip(statusCell(s)); got != "unknown" {
+		t.Errorf("statusCell = %q", got)
+	}
+	if got := ansi.Strip(statusCell(status{})); got != iconClean {
+		t.Errorf("a clean worktree's cell = %q", got)
+	}
+}
+
+// Headers git prints without an upstream, on a first commit or detached leave
+// ahead and behind at 0; only entry lines count.
+func TestParseStatusWithoutUpstream(t *testing.T) {
+	for name, out := range map[string]string{
+		"no upstream":  "# branch.oid 1111\n# branch.head feat/x\n? new.go",
+		"first commit": "# branch.oid (initial)\n# branch.head main\n? new.go",
+		"detached":     "# branch.oid 1111\n# branch.head (detached)\n? new.go",
+	} {
+		if got, want := parseStatus(out), (status{untracked: 1}); got != want {
+			t.Errorf("%s: got %+v, want %+v", name, got, want)
+		}
+	}
+	if got := parseStatus(""); got != (status{}) {
+		t.Errorf("clean: got %+v", got)
+	}
+}
+
+// A local branch gets its PR the way gh pr view finds it: by the repository
+// the branch pushes to and its name there, an open PR before a newer closed one.
+func TestPRByBranch(t *testing.T) {
+	pr := func(number int, state, branch, forkOwner string) pullRequest {
+		p := pullRequest{Number: number, State: state, HeadRefName: branch, IsCrossRepository: forkOwner != ""}
+		p.HeadRepositoryOwner.Login = forkOwner
+		return p
+	}
+	names := prNames{def: "main", bases: []string{"up/proj"}, heads: map[string]prHead{
+		"main":          {repo: "up/proj", branch: "main"},
+		"feat":          {repo: "up/proj", branch: "feat"},        // pushes to the repository itself
+		"done":          {repo: "Old/Name", branch: "done"},       // ... under the name it had when cloned
+		"local":         {branch: "local"},                        // no remote: the repository itself, as gh assumes
+		"develop":       {repo: "me/proj", branch: "develop"},     // pushes to our fork
+		"review":        {repo: "someone/proj", branch: "review"}, // a fork's PR opened with gh pr checkout
+		"someone/taken": {repo: "someone/proj", branch: "taken"},  // ... under another local name
+		"taken":         {repo: "up/proj", branch: "taken"},
+		"readonly":      {number: 2}, // refs/pull/2/head
+	}}
+	got := prByBranch([]pullRequest{ // newest first, as gh lists them
+		pr(20, "MERGED", "main", ""),  // the default branch only counts an open PR
+		pr(15, "OPEN", "develop", ""), // the repository's own develop, not our fork's
+		pr(14, "OPEN", "develop", "me"),
+		pr(13, "OPEN", "local", ""),
+		pr(12, "OPEN", "taken", "someone"),
+		pr(11, "OPEN", "review", "someone"),
+		pr(10, "OPEN", "review", "other"), // another fork's branch of that name
+		pr(9, "OPEN", "feat", "someone"),  // a stranger's branch named like ours
+		pr(8, "CLOSED", "feat", ""),
+		pr(7, "OPEN", "feat", ""),
+		pr(6, "OPEN", "feat", ""),
+		pr(5, "MERGED", "done", ""),
+		pr(4, "CLOSED", "done", ""),
+		pr(3, "OPEN", "unknown", "someone"), // no local branch
+		pr(2, "OPEN", "whatever", "someone"),
+	}, prNames{def: names.def, bases: append(names.bases, "old/name"), heads: names.heads})
+	want := map[string]int{"feat": 7, "done": 5, "local": 13, "develop": 14, "review": 11, "someone/taken": 12, "readonly": 2}
+	for branch, number := range want {
+		if got[branch].Number != number {
+			t.Errorf("%s: PR #%d, want #%d", branch, got[branch].Number, number)
+		}
+	}
+	if len(got) != len(want) {
+		t.Errorf("got %d branches, want %d: %v", len(got), len(want), got)
+	}
+}
+
+// An open PR older than the newest PRs of any state is still found.
+func TestFetchPRsFindsOldOpenPR(t *testing.T) {
+	gitEnv(t)
+	stub := t.TempDir()
+	script := `#!/bin/sh
+case "$*" in
+*"repo view"*) echo main ;;
+*"--state all"*) echo '[{"number":10,"state":"MERGED","headRefName":"main","url":"https://github.com/up/proj/pull/10"},{"number":9,"state":"MERGED","headRefName":"done","url":"https://github.com/up/proj/pull/9"},{"number":8,"state":"CLOSED","headRefName":"retried","url":"https://github.com/up/proj/pull/8"}]' ;;
+*) echo '[{"number":7,"state":"OPEN","headRefName":"retried","url":"https://github.com/up/proj/pull/7"},{"number":3,"state":"OPEN","headRefName":"long-lived","url":"https://github.com/up/proj/pull/3"}]' ;;
+esac
+`
+	if err := os.WriteFile(filepath.Join(stub, "gh"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", stub+string(os.PathListSeparator)+os.Getenv("PATH"))
+	repo := t.TempDir()
+	run := gitIn(t, repo)
+	run("init", "-q", "-b", "main")
+	run("commit", "-q", "--allow-empty", "-m", "init")
+	for _, b := range []string{"long-lived", "retried", "done"} {
+		run("branch", b)
+	}
+	t.Chdir(repo)
+
+	prs, msg := fetchPRs()
+	if msg != "" {
+		t.Fatal(msg)
+	}
+	for branch, want := range map[string]int{"long-lived": 3, "retried": 7, "done": 9} {
+		if prs[branch].Number != want {
+			t.Errorf("%s: PR #%d, want #%d", branch, prs[branch].Number, want)
+		}
+	}
+	// main is the default branch on GitHub, whatever the clone says: a merged
+	// PR whose head was main is not its PR.
+	if pr, ok := prs["main"]; ok {
+		t.Errorf("main: PR #%d, want none", pr.Number)
+	}
+}
+
 func TestRenderTableFits(t *testing.T) {
 	initStyles()
 	rows := []row{{
@@ -96,19 +216,10 @@ func TestExpandBaseDir(t *testing.T) {
 }
 
 func TestDeleteTargets(t *testing.T) {
-	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
-	t.Setenv("GIT_AUTHOR_NAME", "t")
-	t.Setenv("GIT_AUTHOR_EMAIL", "t@t")
-	t.Setenv("GIT_COMMITTER_NAME", "t")
-	t.Setenv("GIT_COMMITTER_EMAIL", "t@t")
+	gitEnv(t)
 	dir, _ := filepath.EvalSymlinks(t.TempDir())
 	repo := filepath.Join(dir, "repo")
-	run := func(args ...string) {
-		t.Helper()
-		if out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
-	}
+	run := gitIn(t, repo)
 	if err := os.MkdirAll(repo, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -160,19 +271,10 @@ func TestDeleteTargets(t *testing.T) {
 // TestDeleteTargetsEdgeCases covers cases found in review: lookup precedence,
 // the main HEAD branch, vanished worktrees, empty and duplicate targets.
 func TestDeleteTargetsEdgeCases(t *testing.T) {
-	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
-	t.Setenv("GIT_AUTHOR_NAME", "t")
-	t.Setenv("GIT_AUTHOR_EMAIL", "t@t")
-	t.Setenv("GIT_COMMITTER_NAME", "t")
-	t.Setenv("GIT_COMMITTER_EMAIL", "t@t")
+	gitEnv(t)
 	dir, _ := filepath.EvalSymlinks(t.TempDir())
 	repo := filepath.Join(dir, "repo")
-	run := func(args ...string) {
-		t.Helper()
-		if out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
-	}
+	run := gitIn(t, repo)
 	if err := os.MkdirAll(repo, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -216,6 +318,7 @@ func TestDeleteTargetsEdgeCases(t *testing.T) {
 		t.Fatalf("clone --bare: %v\n%s", err, out)
 	}
 	repo = bare
+	run = gitIn(t, repo)
 	run("worktree", "add", "-q", "-b", "feat", filepath.Join(bare, "wt/feat"))
 	run("worktree", "add", "-q", filepath.Join(bare, "wt/trunk"), "trunk")
 	t.Chdir(filepath.Join(bare, "wt/feat"))
@@ -232,19 +335,10 @@ func TestDeleteTargetsEdgeCases(t *testing.T) {
 }
 
 func TestRenameWorktree(t *testing.T) {
-	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
-	t.Setenv("GIT_AUTHOR_NAME", "t")
-	t.Setenv("GIT_AUTHOR_EMAIL", "t@t")
-	t.Setenv("GIT_COMMITTER_NAME", "t")
-	t.Setenv("GIT_COMMITTER_EMAIL", "t@t")
+	gitEnv(t)
 	dir, _ := filepath.EvalSymlinks(t.TempDir())
 	repo := filepath.Join(dir, "repo")
-	run := func(args ...string) {
-		t.Helper()
-		if out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
-	}
+	run := gitIn(t, repo)
 	exists := func(rel string) bool {
 		_, err := os.Stat(filepath.Join(repo, rel))
 		return err == nil
@@ -303,19 +397,10 @@ func TestRenameWorktree(t *testing.T) {
 // before anything moves, no worktree may nest in another, and a symlinked base
 // still gets its empty parents cleaned up.
 func TestRenameWorktreeConflicts(t *testing.T) {
-	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
-	t.Setenv("GIT_AUTHOR_NAME", "t")
-	t.Setenv("GIT_AUTHOR_EMAIL", "t@t")
-	t.Setenv("GIT_COMMITTER_NAME", "t")
-	t.Setenv("GIT_COMMITTER_EMAIL", "t@t")
+	gitEnv(t)
 	dir, _ := filepath.EvalSymlinks(t.TempDir())
 	repo := filepath.Join(dir, "repo")
-	run := func(args ...string) {
-		t.Helper()
-		if out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
-	}
+	run := gitIn(t, repo)
 	exists := func(p string) bool { _, err := os.Stat(p); return err == nil }
 	if err := os.MkdirAll(filepath.Join(dir, "real"), 0o755); err != nil {
 		t.Fatal(err)
@@ -369,20 +454,11 @@ func TestRenameWorktreeConflicts(t *testing.T) {
 // renamed leaves everything as it was, including pre-existing paths under base
 // and a branch that -M overwrote.
 func TestRenameWorktreeFailedMove(t *testing.T) {
-	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
-	t.Setenv("GIT_AUTHOR_NAME", "t")
-	t.Setenv("GIT_AUTHOR_EMAIL", "t@t")
-	t.Setenv("GIT_COMMITTER_NAME", "t")
-	t.Setenv("GIT_COMMITTER_EMAIL", "t@t")
+	gitEnv(t)
 	dir, _ := filepath.EvalSymlinks(t.TempDir())
 	repo := filepath.Join(dir, "repo")
 	wt := filepath.Join(repo, ".wt")
-	run := func(args ...string) {
-		t.Helper()
-		if out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
-	}
+	run := gitIn(t, repo)
 	if err := os.MkdirAll(repo, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -425,19 +501,10 @@ func TestRenameWorktreeFailedMove(t *testing.T) {
 }
 
 func TestQualifyStartPoint(t *testing.T) {
-	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
-	t.Setenv("GIT_AUTHOR_NAME", "t")
-	t.Setenv("GIT_AUTHOR_EMAIL", "t@t")
-	t.Setenv("GIT_COMMITTER_NAME", "t")
-	t.Setenv("GIT_COMMITTER_EMAIL", "t@t")
+	gitEnv(t)
 	dir, _ := filepath.EvalSymlinks(t.TempDir())
 	repo := filepath.Join(dir, "repo")
-	run := func(args ...string) {
-		t.Helper()
-		if out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
-	}
+	run := gitIn(t, repo)
 	for _, r := range []string{"origin.git", "up.git"} {
 		if out, err := exec.Command("git", "init", "-q", "--bare", filepath.Join(dir, r)).CombinedOutput(); err != nil {
 			t.Fatalf("%v\n%s", err, out)
@@ -503,25 +570,14 @@ func TestCheckDestination(t *testing.T) {
 // TestCLIBranchAndOrphan runs the built binary for -b and --orphan, whose
 // create paths exit the process on errors.
 func TestCLIBranchAndOrphan(t *testing.T) {
-	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
-	t.Setenv("GIT_AUTHOR_NAME", "t")
-	t.Setenv("GIT_AUTHOR_EMAIL", "t@t")
-	t.Setenv("GIT_COMMITTER_NAME", "t")
-	t.Setenv("GIT_COMMITTER_EMAIL", "t@t")
+	gitEnv(t)
 	dir, _ := filepath.EvalSymlinks(t.TempDir())
 	bin := filepath.Join(dir, "gh-wt")
 	if out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
 		t.Fatalf("build: %v\n%s", err, out)
 	}
 	repo := filepath.Join(dir, "repo")
-	gitIn := func(args ...string) string {
-		t.Helper()
-		out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput()
-		if err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
-		return strings.TrimSpace(string(out))
-	}
+	gitIn := gitIn(t, repo)
 	wt := func(args ...string) (string, error) {
 		cmd := exec.Command(bin, args...)
 		cmd.Dir = repo
@@ -631,20 +687,9 @@ func TestCLIBranchAndOrphan(t *testing.T) {
 }
 
 func TestPRBehind(t *testing.T) {
-	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
-	t.Setenv("GIT_AUTHOR_NAME", "t")
-	t.Setenv("GIT_AUTHOR_EMAIL", "t@t")
-	t.Setenv("GIT_COMMITTER_NAME", "t")
-	t.Setenv("GIT_COMMITTER_EMAIL", "t@t")
+	gitEnv(t)
 	repo := t.TempDir()
-	run := func(args ...string) string {
-		t.Helper()
-		out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput()
-		if err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
-		return strings.TrimSpace(string(out))
-	}
+	run := gitIn(t, repo)
 	run("init", "-q", "-b", "main")
 	run("commit", "-q", "--allow-empty", "-m", "base")
 	base := run("rev-parse", "HEAD")
@@ -673,37 +718,17 @@ func TestPRBehind(t *testing.T) {
 	}
 }
 
-func TestOriginRepoAndInOrigin(t *testing.T) {
-	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
-	repo := t.TempDir()
-	if out, err := exec.Command("git", "-C", repo, "init", "-q").CombinedOutput(); err != nil {
-		t.Fatalf("%v\n%s", err, out)
-	}
-	t.Chdir(repo)
-	for _, url := range []string{"git@github.com:me/fork.git", "https://github.com/me/fork.git", "ssh://git@github.com/me/fork"} {
-		_ = exec.Command("git", "remote", "remove", "origin").Run()
-		if out, err := exec.Command("git", "remote", "add", "origin", url).CombinedOutput(); err != nil {
-			t.Fatalf("%v\n%s", err, out)
-		}
-		if got := originRepo(); got != "me/fork" {
-			t.Errorf("originRepo(%s) = %q", url, got)
-		}
-	}
-	pr := func(cross bool, head string) pullRequest {
-		p := pullRequest{IsCrossRepository: cross}
-		p.HeadRepository.NameWithOwner = head
-		return p
-	}
-	for _, c := range []struct {
-		pr   pullRequest
-		want bool
-	}{
-		{pr(false, "up/proj"), true}, // same repository
-		{pr(true, "Me/Fork"), true},  // from origin, which is a fork
-		{pr(true, "someone/fork"), false},
+func TestRepoOf(t *testing.T) {
+	for url, want := range map[string]string{
+		"git@github.com:me/fork.git":        "me/fork",
+		"https://github.com/me/fork.git":    "me/fork",
+		"https://github.com/me/fork":        "me/fork",
+		"ssh://git@github.com/me/fork":      "me/fork",
+		"https://github.com/up/proj/pull/7": "pull/7", // callers cut the URL of a PR first
+		"":                                  "",
 	} {
-		if got := inOrigin(c.pr, "me/fork"); got != c.want {
-			t.Errorf("inOrigin(%+v) = %v", c.pr, got)
+		if got := repoOf(url); got != want {
+			t.Errorf("repoOf(%q) = %q, want %q", url, got, want)
 		}
 	}
 }
@@ -711,11 +736,7 @@ func TestOriginRepoAndInOrigin(t *testing.T) {
 // TestPRBehindNoLazyFetch: in a partial clone, an unfetched PR head must not
 // be fetched just to draw the table.
 func TestPRBehindNoLazyFetch(t *testing.T) {
-	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
-	t.Setenv("GIT_AUTHOR_NAME", "t")
-	t.Setenv("GIT_AUTHOR_EMAIL", "t@t")
-	t.Setenv("GIT_COMMITTER_NAME", "t")
-	t.Setenv("GIT_COMMITTER_EMAIL", "t@t")
+	gitEnv(t)
 	dir := t.TempDir()
 	server, clone := filepath.Join(dir, "server"), filepath.Join(dir, "clone")
 	git := func(args ...string) string {
@@ -746,22 +767,110 @@ func TestPRBehindNoLazyFetch(t *testing.T) {
 
 func TestPRBranch(t *testing.T) {
 	pr := func(head string, cross bool) pullRequest {
-		p := pullRequest{HeadRefName: head, IsCrossRepository: cross}
+		p := pullRequest{Number: 7, HeadRefName: head, IsCrossRepository: cross}
 		p.HeadRepositoryOwner.Login = "someone"
 		return p
 	}
+	names := prNames{def: "main", bases: []string{"up/proj"}, heads: map[string]prHead{
+		"mine":     {repo: "up/proj", branch: "mine"},        // our own branch, pushed
+		"unpushed": {branch: "unpushed"},                     // our own branch, no remote
+		"theirs":   {repo: "Someone/proj", branch: "theirs"}, // gh pr checkout of a fork that can be pushed to
+		"readonly": {number: 7},                              // ... and of one that can't
+		"other-pr": {number: 8},
+	}}
 	for _, c := range []struct {
 		pr   pullRequest
 		want string
 	}{
 		{pr("feat", false), "feat"},
-		{pr("feat", true), "feat"},
+		{pr("feat", true), "feat"}, // no local branch of that name
 		{pr("main", false), "main"},
 		{pr("main", true), "someone/main"},
+		{pr("mine", false), "mine"},
+		{pr("mine", true), "someone/mine"}, // a stranger's branch named like ours
+		{pr("unpushed", true), "someone/unpushed"},
+		{pr("theirs", true), "theirs"},
+		{pr("readonly", true), "readonly"},
+		{pr("other-pr", true), "someone/other-pr"},
 	} {
-		if got := prBranch(c.pr, "main"); got != c.want {
-			t.Errorf("prBranch(%+v) = %q, want %q", c.pr, got, c.want)
+		if got := names.branch(c.pr); got != c.want {
+			t.Errorf("branch(%s, fork %v) = %q, want %q", c.pr.HeadRefName, c.pr.IsCrossRepository, got, c.want)
 		}
+	}
+}
+
+// localBranches works out each branch's PR head by gh's rules.
+func TestLocalBranches(t *testing.T) {
+	gitEnv(t)
+	repo := t.TempDir()
+	run := gitIn(t, repo)
+	run("init", "-q", "-b", "main")
+	run("commit", "-q", "--allow-empty", "-m", "init")
+	run("remote", "add", "origin", "git@github.com:me/proj.git")
+	run("remote", "add", "upstream", "https://github.com/up/proj.git")
+	for _, b := range []string{"mine", "tracks-main", "to-upstream", "on-mine", "theirs", "someone/taken", "readonly", "feat/plain"} {
+		run("branch", b)
+	}
+	config := func(branch string, pairs ...string) {
+		for i := 0; i < len(pairs); i += 2 {
+			run("config", "branch."+branch+"."+pairs[i], pairs[i+1])
+		}
+	}
+	config("mine", "remote", "origin", "merge", "refs/heads/mine")
+	config("tracks-main", "remote", "upstream", "merge", "refs/heads/main") // git switch -c tracks-main upstream/main
+	config("to-upstream", "remote", "origin", "pushRemote", "upstream", "merge", "refs/heads/to-upstream")
+	config("on-mine", "remote", ".", "merge", "refs/heads/mine") // git switch -c on-mine -t mine
+	// As gh pr checkout writes them for a fork's PR:
+	config("theirs", "remote", "git@github.com:someone/proj.git", "pushRemote", "git@github.com:someone/proj.git", "merge", "refs/heads/theirs")
+	config("someone/taken", "remote", "git@github.com:someone/proj.git", "pushRemote", "git@github.com:someone/proj.git", "merge", "refs/heads/taken")
+	config("readonly", "remote", "upstream", "merge", "refs/pull/7/head")
+	t.Chdir(repo)
+	check := func(want map[string]prHead, wantBases ...string) {
+		t.Helper()
+		got, bases := localBranches()
+		slices.Sort(bases)
+		if !slices.Equal(bases, wantBases) {
+			t.Errorf("bases = %v, want %v", bases, wantBases)
+		}
+		if len(got) != len(want) {
+			t.Errorf("got %d branches: %v", len(got), got)
+		}
+		for name, w := range want {
+			if got[name] != w {
+				t.Errorf("%s: %+v, want %+v", name, got[name], w)
+			}
+		}
+	}
+	want := map[string]prHead{
+		"main":          {branch: "main"},
+		"mine":          {repo: "me/proj", branch: "mine"},
+		"tracks-main":   {repo: "up/proj", branch: "tracks-main"}, // the name it pushes as, not what it merges
+		"to-upstream":   {repo: "up/proj", branch: "to-upstream"}, // pushRemote before remote
+		"on-mine":       {branch: "on-mine"},                      // its own name, not the local branch it tracks
+		"theirs":        {repo: "someone/proj", branch: "theirs"},
+		"someone/taken": {repo: "someone/proj", branch: "taken"},
+		"readonly":      {number: 7, branch: "readonly"},
+		"feat/plain":    {branch: "feat/plain"},
+	}
+	check(want) // two remotes and none chosen with gh repo set-default: no base from them
+
+	run("config", "remote.upstream.gh-resolved", "base")
+	check(want, "up/proj")
+
+	// remote.pushDefault comes before branch.<name>.remote, and push.default
+	// upstream pushes to the branch that is merged from.
+	run("config", "remote.pushDefault", "origin")
+	run("config", "push.default", "upstream")
+	want["main"] = prHead{repo: "me/proj", branch: "main"}
+	want["feat/plain"] = prHead{repo: "me/proj", branch: "feat/plain"}
+	want["tracks-main"] = prHead{repo: "me/proj", branch: "main"}
+	want["on-mine"] = prHead{repo: "me/proj", branch: "mine"}
+	check(want, "up/proj")
+
+	// With one remote, that is the base repository.
+	run("remote", "remove", "upstream")
+	if _, bases := localBranches(); !slices.Equal(bases, []string{"me/proj"}) {
+		t.Errorf("bases with one remote = %v", bases)
 	}
 }
 
@@ -775,7 +884,7 @@ func TestRenderPRTableFits(t *testing.T) {
 		UpdatedAt:   time.Now().Add(-3 * 24 * time.Hour),
 	}}
 	prs[0].Author.Login = "someone"
-	header, lines := renderPRTable(prs, nil, worktree{}, "main", 100)
+	header, lines, _ := renderPRTable(prs, nil, worktree{}, prNames{def: "main"}, 100)
 	for _, l := range append(lines, header) {
 		if w := ansi.StringWidth(l) + 2; w > 100 {
 			t.Errorf("width %d > 100: %q", w, ansi.Strip(l))
@@ -787,8 +896,7 @@ func TestRenderPRTableFits(t *testing.T) {
 }
 
 func TestPROptionsMoveCurrentUnderHeader(t *testing.T) {
-	prs := []pullRequest{{HeadRefName: "there"}, {HeadRefName: "here"}, {HeadRefName: "other"}}
-	description, options := prOptions(prs, "HEADER", []string{"line0", "line1", "line2"}, "main", "here")
+	description, options := prOptions("HEADER", []string{"line0", "line1", "line2"}, []bool{false, true, false})
 	if want := "HEADER\n" + iconCurrent + " line1"; ansi.Strip(description) != want {
 		t.Errorf("description = %q, want %q", ansi.Strip(description), want)
 	}
@@ -798,25 +906,312 @@ func TestPROptionsMoveCurrentUnderHeader(t *testing.T) {
 	}
 }
 
-func TestCurrentWorktreeWithoutPRIsUnderHeader(t *testing.T) {
-	prs := []pullRequest{{Number: 1, HeadRefName: "other"}}
-	here := worktree{path: t.TempDir(), branch: "here"}
-	header, lines := renderPRTable(prs, []worktree{here}, here, "main", 0)
-	if len(lines) != 2 || !strings.Contains(lines[1], "here") {
-		t.Fatalf("want a line for the branch after the PR's: %q", lines)
+func TestCurrentWorktreeIsUnderHeader(t *testing.T) {
+	initStyles()
+	gitEnv(t)
+	repo := t.TempDir()
+	if out, err := exec.Command("git", "-C", repo, "init", "-q", "-b", "here").CombinedOutput(); err != nil {
+		t.Fatalf("%v\n%s", err, out)
 	}
-	description, options := prOptions(prs, header, lines, "main", here.branch)
+	if err := os.WriteFile(filepath.Join(repo, "new"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prs := []pullRequest{{Number: 1, HeadRefName: "other"}}
+	here := worktree{path: repo, branch: "here"}
+
+	// Without a PR on the branch, it gets a line with its changes after the PR's.
+	header, lines, current := renderPRTable(prs, []worktree{here}, here, prNames{def: "main"}, 0)
+	if len(lines) != 2 || !slices.Equal(current, []bool{false, true}) {
+		t.Fatalf("lines = %q, current = %v", lines, current)
+	}
+	if l := ansi.Strip(lines[1]); !strings.Contains(l, "?1") || !strings.Contains(l, "here") {
+		t.Errorf("the branch's line should show it and its untracked file: %q", l)
+	}
+	description, options := prOptions(header, lines, current)
 	if !strings.Contains(ansi.Strip(description), "here") {
 		t.Errorf("the branch should be under the header: %q", ansi.Strip(description))
 	}
 	if len(options) != 1 || options[0].Value != 0 {
 		t.Errorf("options = %v, want only PR 0", options)
 	}
+
 	// With a PR on the branch, that PR's line is the current one: no extra line.
 	prs = append(prs, pullRequest{Number: 2, HeadRefName: "here"})
-	if _, lines := renderPRTable(prs, []worktree{here}, here, "main", 0); len(lines) != 2 {
-		t.Errorf("no extra line when the branch has a PR: %q", lines)
+	_, lines, current = renderPRTable(prs, []worktree{here}, here, prNames{def: "main"}, 0)
+	if len(lines) != 2 || !slices.Equal(current, []bool{false, true}) {
+		t.Fatalf("lines = %q, current = %v", lines, current)
 	}
+	if l := ansi.Strip(lines[1]); !strings.Contains(l, "?1") || !strings.Contains(l, "#2") {
+		t.Errorf("the PR's line should show the worktree's untracked file: %q", l)
+	}
+}
+
+// cliRepo builds gh-wt and makes a repository with one commit. git runs git in
+// the repository; wt runs gh-wt there and returns its stdout and stderr.
+func cliRepo(t *testing.T) (repo string, git func(args ...string) string, wt func(args ...string) (string, string, error)) {
+	t.Helper()
+	gitEnv(t)
+	dir, _ := filepath.EvalSymlinks(t.TempDir())
+	bin := filepath.Join(dir, "gh-wt")
+	if out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
+		t.Fatalf("build: %v\n%s", err, out)
+	}
+	repo = filepath.Join(dir, "repo")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	git = gitIn(t, repo)
+	wt = func(args ...string) (string, string, error) {
+		cmd := exec.Command(bin, args...)
+		cmd.Dir = repo
+		var stderr strings.Builder
+		cmd.Stderr = &stderr
+		out, err := cmd.Output()
+		return strings.TrimSpace(string(out)), stderr.String(), err
+	}
+	git("init", "-q", "-b", "main")
+	git("commit", "-q", "--allow-empty", "-m", "init")
+	return repo, git, wt
+}
+
+// A worktree inside another one would be deleted along with it.
+func TestCLINoWorktreeInsideAnother(t *testing.T) {
+	repo, git, wt := cliRepo(t)
+	if _, stderr, err := wt("-b", "me/feat", "feat"); err != nil {
+		t.Fatalf("create: %v\n%s", err, stderr)
+	}
+	out, stderr, err := wt("feat/x")
+	if err == nil || out != "" || !strings.Contains(stderr, "would be inside the worktree") {
+		t.Fatalf("feat/x inside the worktree feat: %q, %v\n%s", out, err, stderr)
+	}
+	if exists(filepath.Join(repo, ".wt/feat/x")) || strings.Contains(git("branch"), "feat/x") {
+		t.Error("nothing should be created")
+	}
+	// A directory that only shares the parent is fine.
+	if _, stderr, err := wt("other/x"); err != nil {
+		t.Fatalf("other/x: %v\n%s", err, stderr)
+	}
+}
+
+// -d takes a name as a branch before a directory, also for a branch without a worktree.
+func TestCLIDeleteBranchBeforeDirectory(t *testing.T) {
+	repo, git, wt := cliRepo(t)
+	if _, stderr, err := wt("-b", "me/feat", "feat"); err != nil {
+		t.Fatalf("create: %v\n%s", err, stderr)
+	}
+	git("branch", "feat")
+	if _, stderr, err := wt("-d", "feat"); err != nil {
+		t.Fatalf("-d feat: %v\n%s", err, stderr)
+	}
+	if branches := git("branch", "--format=%(refname:short)"); branches != "main\nme/feat" {
+		t.Errorf("branches = %q, want only feat deleted", branches)
+	}
+	if !exists(filepath.Join(repo, ".wt/feat")) {
+		t.Error("the worktree in the directory feat should be kept")
+	}
+	// With the branch gone, the name is the directory.
+	if _, stderr, err := wt("-d", "feat"); err != nil || exists(filepath.Join(repo, ".wt/feat")) {
+		t.Errorf("-d feat as a directory: %v\n%s", err, stderr)
+	}
+}
+
+// Names git would quote (non-ASCII, quotes, spaces at the ends) are copied too.
+func TestCLICopyQuotedNames(t *testing.T) {
+	repo, git, wt := cliRepo(t)
+	git("config", "wt.copyuntracked", "true")
+	names := []string{"日本語.txt", `a "quoted" name.txt`, " spaced ", "dir/日本語/x.txt"}
+	for _, name := range names {
+		path := filepath.Join(repo, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	path, stderr, err := wt("copy")
+	if err != nil || strings.Contains(stderr, "warning") {
+		t.Fatalf("create: %v\n%s", err, stderr)
+	}
+	for _, name := range names {
+		if !exists(filepath.Join(path, name)) {
+			t.Errorf("%q was not copied", name)
+		}
+	}
+}
+
+// wt.copymodified copies a changed file and passes over a deleted one.
+func TestCLICopyModifiedSkipsDeleted(t *testing.T) {
+	repo, git, wt := cliRepo(t)
+	for _, name := range []string{"changed.txt", "gone.txt"} {
+		if err := os.WriteFile(filepath.Join(repo, name), []byte("old"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	git("add", ".")
+	git("commit", "-q", "-m", "files")
+	git("config", "wt.copymodified", "true")
+	if err := os.WriteFile(filepath.Join(repo, "changed.txt"), []byte("new"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(repo, "gone.txt")); err != nil {
+		t.Fatal(err)
+	}
+	path, stderr, err := wt("copy")
+	if err != nil || strings.Contains(stderr, "warning") {
+		t.Fatalf("create: %v\n%s", err, stderr)
+	}
+	if got, _ := os.ReadFile(filepath.Join(path, "changed.txt")); string(got) != "new" {
+		t.Errorf("changed.txt = %q, want the uncommitted change", got)
+	}
+}
+
+// With wt.basedir two levels deep, the directory above it is copied without
+// the worktrees in it.
+func TestCLICopyAroundNestedBase(t *testing.T) {
+	repo, git, wt := cliRepo(t)
+	git("config", "wt.basedir", "work/trees")
+	git("config", "wt.copyuntracked", "true")
+	for _, name := range []string{"work/notes.txt", "work/sub/deep.txt"} {
+		path := filepath.Join(repo, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, name := range []string{"n1", "n2"} {
+		path, stderr, err := wt(name)
+		if err != nil || strings.Contains(stderr, "warning") {
+			t.Fatalf("create %s: %v\n%s", name, err, stderr)
+		}
+		for _, copied := range []string{"work/notes.txt", "work/sub/deep.txt"} {
+			if !exists(filepath.Join(path, copied)) {
+				t.Errorf("%s: %s was not copied", name, copied)
+			}
+		}
+		if exists(filepath.Join(path, "work/trees")) {
+			t.Errorf("%s: the worktrees under work/trees were copied in", name)
+		}
+	}
+}
+
+// A wt.hook value that spans lines is one command; each value is a hook.
+func TestCLIHookSpanningLines(t *testing.T) {
+	_, git, wt := cliRepo(t)
+	git("config", "wt.hook", "if true; then\n  touch first\nfi")
+	git("config", "--add", "wt.hook", "touch second")
+	path, stderr, err := wt("hooked")
+	if err != nil {
+		t.Fatalf("create: %v\n%s", err, stderr)
+	}
+	for _, name := range []string{"first", "second"} {
+		if !exists(filepath.Join(path, name)) {
+			t.Errorf("hook did not create %s\n%s", name, stderr)
+		}
+	}
+}
+
+// A gh that fails without a word is still a failure, not "no pull requests".
+func TestCLISilentGhFailure(t *testing.T) {
+	_, _, wt := cliRepo(t)
+	stub := t.TempDir()
+	if err := os.WriteFile(filepath.Join(stub, "gh"), []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", stub+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	_, stderr, err := wt("-p")
+	if err == nil || strings.Contains(stderr, "no open pull requests") || !strings.Contains(stderr, "exit status 1") {
+		t.Errorf("-p: %v\n%s", err, stderr)
+	}
+	out, stderr, err := wt("-l")
+	if err != nil || !strings.Contains(out, "main") || !strings.Contains(stderr, "PR state unavailable") {
+		t.Errorf("-l: %v\n%s\n%s", err, out, stderr)
+	}
+}
+
+// wt.copyuntracked leaves out the ignored files of an untracked directory
+// unless wt.copyignored asks for them.
+func TestCLICopyUntrackedWithoutIgnored(t *testing.T) {
+	repo, git, wt := cliRepo(t)
+	for name, content := range map[string]string{".gitignore": ".env\n", "pkg/u.txt": "u", "pkg/.env": "secret", "pkg/deep/.env": "secret"} {
+		path := filepath.Join(repo, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	git("add", ".gitignore")
+	git("commit", "-q", "-m", "ignore")
+	git("config", "wt.copyuntracked", "true")
+	path, stderr, err := wt("untracked-only")
+	if err != nil || strings.Contains(stderr, "warning") {
+		t.Fatalf("create: %v\n%s", err, stderr)
+	}
+	if !exists(filepath.Join(path, "pkg/u.txt")) {
+		t.Error("the untracked file was not copied")
+	}
+	for _, name := range []string{"pkg/.env", "pkg/deep/.env"} {
+		if exists(filepath.Join(path, name)) {
+			t.Errorf("the ignored %s was copied without wt.copyignored", name)
+		}
+	}
+	git("config", "wt.copyignored", "true")
+	if path, _, err = wt("both"); err != nil || !exists(filepath.Join(path, "pkg/u.txt")) || !exists(filepath.Join(path, "pkg/deep/.env")) {
+		t.Errorf("with wt.copyignored both kinds should be copied: %v", err)
+	}
+}
+
+// As in git-wt, -b with the directory of an existing worktree switches to that
+// worktree, and the directory is joined to wt.basedir as it is given.
+func TestCLIBranchFlagWithExistingDirectory(t *testing.T) {
+	repo, git, wt := cliRepo(t)
+	if _, stderr, err := wt("feat"); err != nil {
+		t.Fatalf("create: %v\n%s", err, stderr)
+	}
+	if path, stderr, err := wt("-b", "fix/2", "feat"); err != nil || path != filepath.Join(repo, ".wt/feat") {
+		t.Errorf("-b fix/2 feat = %q, want the worktree feat: %v\n%s", path, err, stderr)
+	}
+	if branches := git("branch", "--format=%(refname:short)"); branches != "feat\nmain" {
+		t.Errorf("branches = %q, want no fix/2", branches)
+	}
+	if path, stderr, err := wt("-b", "esc", "../outside"); err != nil || path != filepath.Join(repo, "outside") {
+		t.Errorf("-b esc ../outside = %q, want %q: %v\n%s", path, filepath.Join(repo, "outside"), err, stderr)
+	}
+}
+
+// gitIn returns a function that runs git in repo, fails the test when git
+// does, and returns its output.
+func gitIn(t *testing.T, repo string) func(args ...string) string {
+	return func(args ...string) string {
+		t.Helper()
+		out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+}
+
+// gitEnv keeps the user's and the system's git config out of a test, and the
+// repository of a git hook the tests may run from, and lets it commit.
+func gitEnv(t *testing.T) {
+	for _, key := range []string{"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"} {
+		if value, ok := os.LookupEnv(key); ok {
+			os.Unsetenv(key)
+			t.Cleanup(func() { os.Setenv(key, value) })
+		}
+	}
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_AUTHOR_NAME", "t")
+	t.Setenv("GIT_AUTHOR_EMAIL", "t@t")
+	t.Setenv("GIT_COMMITTER_NAME", "t")
+	t.Setenv("GIT_COMMITTER_EMAIL", "t@t")
 }
 
 // pickerRows are three worktrees (the first current) and a PR for each branch.
@@ -887,13 +1282,13 @@ func TestPickerHoldsPRsWhileFiltering(t *testing.T) {
 		p.Update(key(k))
 	}
 	p.Update(l)
-	if v := ansi.Strip(p.View()); strings.Contains(v, "#10") {
-		t.Fatalf("PRs shown while typing a filter:\n%s", v)
+	if v := ansi.Strip(p.View()); !p.held || strings.Contains(v, "#10") {
+		t.Fatalf("PRs shown while typing a filter (held = %v):\n%s", p.held, v)
 	}
 	p.Update(key("esc")) // keep the filter, leave typing
 	p.Update(refreshMsg{})
-	if v := ansi.Strip(p.View()); strings.Contains(v, "#10") {
-		t.Fatalf("PRs shown under a filter:\n%s", v)
+	if v := ansi.Strip(p.View()); !p.held || strings.Contains(v, "#10") {
+		t.Fatalf("PRs shown under a filter (held = %v):\n%s", p.held, v)
 	}
 	_, cmd := p.Update(key("esc")) // clear the filter
 	if cmd == nil {
@@ -945,6 +1340,69 @@ func TestLiveTableReceivesLookup(t *testing.T) {
 	t.Fatal("no cmd returned the lookup")
 }
 
+// An open PR's head adds to the commits behind the upstream, as in gh wt -p;
+// a head that isn't fetched shows as unknown.
+func TestLiveTableOpenPRBehind(t *testing.T) {
+	open := &pullRequest{Number: 1, State: "OPEN"}
+	tbl := newLiveTable(0, nil)
+	tbl.rows = []row{{status: status{behind: 5}}, {status: status{behind: 1}}, {}, {status: status{behind: 3}}}
+	tbl.update(prLookup{prs: []prRow{
+		{pr: open, behind: 0, known: true}, // up to date with the PR, 5 behind the upstream
+		{pr: open, behind: 4, known: true},
+		{pr: open}, // head not fetched
+		{pr: &pullRequest{State: "MERGED"}, behind: 9, known: true}, // only open PRs count
+	}})
+	for i, want := range []status{{behind: 5}, {behind: 4}, {remoteNew: true}, {behind: 3}} {
+		if got := tbl.rows[i].status; got != want {
+			t.Errorf("row %d: status = %+v, want %+v", i, got, want)
+		}
+	}
+}
+
+// The PR picker shortens its columns too when the terminal gets narrower, and
+// keeps the PRs' indexes as the options' values.
+func TestPRPickerFitsAfterResize(t *testing.T) {
+	initStyles()
+	prs := []pullRequest{
+		{Number: 1, HeadRefName: "here", Title: strings.Repeat("the current one ", 5)},
+		{Number: 2, HeadRefName: "feat/a", Title: strings.Repeat("a long title ", 6)},
+		{Number: 3, HeadRefName: "feat/b", Title: strings.Repeat("another long title ", 4)},
+	}
+	cells, current := prCells(prs, nil, worktree{branch: "here"}, prNames{})
+	var selected int
+	p := newPRPicker(cells, current, 200, &selected)
+	wide := ansi.StringWidth(p.options[0].Key)
+	p.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	if len(p.options) != 2 || p.options[0].Value != 1 || p.options[1].Value != 2 {
+		t.Fatalf("options = %v, want PRs 1 and 2", p.options)
+	}
+	for _, o := range p.options {
+		if w := ansi.StringWidth(o.Key); w > 100-pickerMargin || w >= wide {
+			t.Errorf("line is %d cells wide in a 100-cell terminal (was %d): %q", w, wide, ansi.Strip(o.Key))
+		}
+	}
+	if v := ansi.Strip(p.View()); !strings.Contains(v, iconCurrent) {
+		t.Errorf("the current PR should stay under the header:\n%s", v)
+	}
+}
+
+// Narrowing the terminal shortens the columns again instead of wrapping lines.
+func TestPickerFitsAfterResize(t *testing.T) {
+	initStyles()
+	rows, _ := pickerRows()
+	for i := range rows {
+		rows[i].subject = strings.Repeat("a long subject ", 5)
+	}
+	var selected string
+	p := newPicker(rows, 200, 0, make(chan prLookup), &selected)
+	p.Update(tea.WindowSizeMsg{Width: 60, Height: 30})
+	for _, o := range p.options {
+		if w := ansi.StringWidth(o.Key); w > 60-pickerMargin {
+			t.Errorf("line is %d cells wide in a 60-cell terminal: %q", w, ansi.Strip(o.Key))
+		}
+	}
+}
+
 // In a narrow terminal the PRs make the lines wrap; huh must re-measure so no
 // row disappears and the cursor stays on its row.
 func TestPickerNarrowFill(t *testing.T) {
@@ -993,18 +1451,9 @@ func TestPickerLookupBeforeSize(t *testing.T) {
 // The PR column's room comes from the PR numbers in the default branch's subjects.
 func TestPRColumnWidth(t *testing.T) {
 	initStyles()
-	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
-	t.Setenv("GIT_AUTHOR_NAME", "t")
-	t.Setenv("GIT_AUTHOR_EMAIL", "t@t")
-	t.Setenv("GIT_COMMITTER_NAME", "t")
-	t.Setenv("GIT_COMMITTER_EMAIL", "t@t")
+	gitEnv(t)
 	repo := t.TempDir()
-	run := func(args ...string) {
-		t.Helper()
-		if out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
-	}
+	run := gitIn(t, repo)
 	run("init", "-q", "-b", "main")
 	run("config", "init.defaultBranch", "main")
 	run("commit", "-q", "--allow-empty", "-m", "init")
@@ -1027,10 +1476,20 @@ func TestNoShiftWhenPRsArrive(t *testing.T) {
 	tbl := newLiveTable(160, nil)
 	tbl.rows = rows
 	tbl.prWidth = ansi.StringWidth(prCell(&pullRequest{Number: 103, State: "MERGED"}))
-	before, _ := tbl.render()
+	before, linesBefore := tbl.render()
 	tbl.update(l)
-	after, _ := tbl.render()
+	after, linesAfter := tbl.render()
 	if ansi.Strip(before) != ansi.Strip(after) {
 		t.Errorf("header moved:\n%q\n%q", ansi.Strip(before), ansi.Strip(after))
+	}
+	// The cells after the PR column stay where they were.
+	pathAt := func(line, path string) int {
+		line = ansi.Strip(line)
+		return ansi.StringWidth(line[:strings.LastIndex(line, path)])
+	}
+	for i, r := range rows {
+		if b, a := pathAt(linesBefore[i], r.wt.path), pathAt(linesAfter[i], r.wt.path); b != a {
+			t.Errorf("row %d: PATH moved from cell %d to %d", i, b, a)
+		}
 	}
 }

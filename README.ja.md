@@ -43,7 +43,7 @@ gh-wt は [k1LoW/git-wt](https://github.com/k1LoW/git-wt) にならっていま�
 
 | 列          | 内容                                                                                                  |
 | ----------- | ----------------------------------------------------------------------------------------------------- |
-| BRANCH      | ブランチ名（最大 28 セル）、または `(detached)`                                                       |
+| BRANCH      | ブランチ名（最大 26 セル）、または `(detached)`                                                       |
 | CHANGES     | upstream より `↑` 進んでいる / `↓` 遅れているコミット数、`!` 衝突、`+` ステージ済み、`~` 変更、`?` 未追跡 |
 | PR          | そのブランチの PR の番号と状態（open / draft / merged / closed）。開いている PR を優先                 |
 | LAST COMMIT | 最後のコミットの件名と、どれくらい前か                                                                      |
@@ -51,6 +51,7 @@ gh-wt は [k1LoW/git-wt](https://github.com/k1LoW/git-wt) にならっていま�
 
 - 表は、git が worktree を読み終えた時点ですぐに出ます。PR 列は `gh` の応答が届くまでスピナーを表示し、届いたら他の列を動かさずに埋まります。その間もカーソルを動かしたり選んだりできます。パイプに出すときの `gh wt -l` は、応答を待ってから一度に出力します。
 - 開いている PR があるブランチでは、PR に push されたのに worktree にまだないコミットも、fetch せずに `↓` に数えます。`↓N` は、そうしたコミットがあるものの、まだ fetch していないので数えられないことを表します。
+- 状態を読み取れない worktree では、CHANGES が `unknown` になります（ロックされていて、マウントされていないボリュームにある worktree など）。
 - 選択画面では、現在の worktree がヘッダーの下に灰色で表示され、選べません。
 - 表が端末より広いときは、PATH、コミットの件名、BRANCH の順に短くします。
 
@@ -116,7 +117,7 @@ $ gh wt -p 1720     # #1720、PR の URL、ブランチ名でも指定できる
 
 - 先に PR を fetch します。普通の `gh wt <branch>` は fetch しません。
 - 新しいブランチは PR のブランチを追跡します。既存のブランチは fast-forward します（できないときは拒否します）。
-- フォークのブランチが既定ブランチと同じ名前のときは、gh と同じく `<owner>/<branch>` という名前になります。
+- フォークのブランチが既定ブランチと同じ名前のときは、gh と同じく `<owner>/<branch>` という名前になります。その PR のものではないローカルブランチと同じ名前のときも同様です。gh が手元のブランチをその PR まで fast-forward してしまうのを避けるためです。
 - 別のリポジトリの PR の URL を渡すと、`gh pr checkout <url>` と同じく、その PR を fetch します。
 
 gh-wt が加えるのは、`wt.basedir` の下のパスを決めることと、新しい worktree でのファイルのコピーと `wt.hook` の実行だけです。
@@ -165,6 +166,8 @@ $ gh wt -m old-name new-name        # worktree "old-name" を "new-name" にす�
 ## インストール
 
 [GitHub CLI](https://cli.github.com/) をインストールしてログインしておくことと、端末のフォントを [Nerd Font](https://www.nerdfonts.com/) にすることが必要です。
+
+gh-wt は macOS と Linux 向けです。Windows 用のバイナリも配布していますが、動作は確認していません。ファイルのコピー（`wt.copy*`）は `cp` を、フックは `sh` を呼び、シェル関数は zsh 用です。そのため、WSL や Git Bash のように、これらが使える環境が必要です。
 
 ``` console
 $ gh extension install meltin/gh-wt

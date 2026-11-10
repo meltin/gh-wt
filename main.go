@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -122,20 +123,17 @@ type worktree struct {
 }
 
 type pullRequest struct {
-	Number            int    `json:"number"`
-	State             string `json:"state"`
-	IsDraft           bool   `json:"isDraft"`
-	HeadRefName       string `json:"headRefName"`
-	HeadRefOid        string `json:"headRefOid"`
-	IsCrossRepository bool   `json:"isCrossRepository"`
-	HeadRepository    struct {
-		NameWithOwner string `json:"nameWithOwner"`
-	} `json:"headRepository"`
-	// Only for gh wt -p.
+	Number              int    `json:"number"`
+	State               string `json:"state"`
+	IsDraft             bool   `json:"isDraft"`
+	HeadRefName         string `json:"headRefName"`
+	HeadRefOid          string `json:"headRefOid"`
+	IsCrossRepository   bool   `json:"isCrossRepository"`
 	HeadRepositoryOwner struct {
 		Login string `json:"login"`
 	} `json:"headRepositoryOwner"`
 	Title     string    `json:"title"`
+	URL       string    `json:"url"`
 	UpdatedAt time.Time `json:"updatedAt"`
 	Author    struct {
 		Login string `json:"login"`
@@ -145,6 +143,7 @@ type pullRequest struct {
 type status struct {
 	ahead, behind, staged, modified, untracked, conflicts int
 	remoteNew                                             bool // the PR has commits not fetched yet
+	unknown                                               bool // git status failed
 }
 
 type row struct {
@@ -157,9 +156,10 @@ type row struct {
 
 func main() {
 	args := os.Args[1:]
-	if len(args) == 0 || (len(args) == 1 && (args[0] == "-p" || args[0] == "--pr")) {
-		// stdout is captured by the shell function, so draw pickers on stderr
-		// and let lipgloss detect colors from stderr too.
+	if !(len(args) == 1 && (args[0] == "-l" || args[0] == "--list")) {
+		// Only the list is styled on stdout. Everything else styled (pickers,
+		// warnings) goes to stderr, as stdout is captured by the shell function,
+		// so let lipgloss detect colors from stderr.
 		lipgloss.SetDefaultRenderer(lipgloss.NewRenderer(os.Stderr))
 	}
 	initStyles()
@@ -297,24 +297,42 @@ func selectWorktree() {
 	if !slices.ContainsFunc(wts, func(wt worktree) bool { return !samePath(wt.path, current) }) {
 		fail("no other worktrees")
 	}
-	width := 0
-	if w, _, err := term.GetSize(os.Stderr.Fd()); err == nil {
-		width = w - 3 // huh's "┃ " border plus a spare cell
-	}
 	prs := lookupPRs(wts)
 	var rows []row
 	var prWidth int
 	spin("Loading worktrees...", func() { rows, prWidth = localRows(wts, current), prColumnWidth() })
 
 	var selected string
-	p := newPicker(rows, width, prWidth, prs, &selected)
+	p := newPicker(rows, pickerWidth(), prWidth, prs, &selected)
 	_, err := tea.NewProgram(p, tea.WithOutput(os.Stderr), tea.WithReportFocus()).Run()
 	if err != nil || p.form.State != huh.StateCompleted {
-		fmt.Fprintln(os.Stderr, grayStyle.Render("Operation cancelled."))
-		os.Exit(1)
+		pickerStopped(err)
 	}
 	p.reportErr()
 	fmt.Println(selected)
+}
+
+// pickerMargin is what a picker's table can't use of the terminal's width:
+// huh's "┃ " border plus a spare cell.
+const pickerMargin = 3
+
+// pickerWidth is the width a picker's table has, 0 when it can't be known.
+func pickerWidth() int {
+	w, _, err := term.GetSize(os.Stderr.Fd())
+	if err != nil {
+		return 0
+	}
+	return w - pickerMargin
+}
+
+// pickerStopped ends a picker that didn't complete: cancelled by the user, or
+// failed with err (no terminal to draw on, for one).
+func pickerStopped(err error) {
+	if err != nil && !errors.Is(err, tea.ErrInterrupted) && !errors.Is(err, huh.ErrUserAborted) {
+		fail(err.Error())
+	}
+	fmt.Fprintln(os.Stderr, grayStyle.Render("Operation cancelled."))
+	os.Exit(1)
 }
 
 // switchTo prints the path of the worktree matching name as a branch, a
@@ -323,7 +341,10 @@ func selectWorktree() {
 func switchTo(dir, branch, startPoint string, orphan bool) {
 	_, base := repoBase()
 	wts := liveWorktrees()
-	// -b names a branch only: a directory or path called like it is not a match.
+	// The -b name is looked up as a branch only: a directory or path called
+	// like it is not a match. The directory argument is then looked up as a
+	// branch, a directory under wt.basedir and a path, as git-wt looks it up,
+	// and a worktree found that way is switched to whatever -b says.
 	i := slices.IndexFunc(wts, func(wt worktree) bool { return wt.branch == branch })
 	wt, ok := worktree{}, i >= 0
 	if ok {
@@ -338,7 +359,11 @@ func switchTo(dir, branch, startPoint string, orphan bool) {
 		fmt.Println(wt.path)
 		return
 	}
-	createWorktree(branch, filepath.Join(base, dir), base, startPoint, orphan)
+	path := filepath.Join(base, dir)
+	if err := checkNotNested(wts, path, base); err != nil {
+		fail(err.Error())
+	}
+	createWorktree(branch, path, base, startPoint, orphan)
 }
 
 // qualifyStartPoint keeps a start point that resolves to a commit, and turns a
@@ -432,6 +457,11 @@ func deleteTargets(targets []string, force bool) (cd string, err error) {
 			return "", errors.New("empty target")
 		}
 		wt, ok := findWorktree(wts, base, name)
+		if ok && wt.branch != name { // matched as a directory or path: a branch of that name wins
+			if _, err := git("-C", mainRoot, "show-ref", "--verify", "--quiet", "refs/heads/"+name); err == nil {
+				ok = false
+			}
+		}
 		resolved[i] = target{name, wt, ok}
 	}
 
@@ -508,11 +538,7 @@ func selectPR() {
 			def, defErr = repoDefaultBranch()
 		}
 	}
-	if isatty.IsTerminal(os.Stderr.Fd()) {
-		_ = spinner.New().Title("Loading pull requests...").Output(os.Stderr).Action(load).Run()
-	} else {
-		load()
-	}
+	spin("Loading pull requests...", load)
 	if prErr != "" {
 		fail(prErr)
 	}
@@ -523,45 +549,46 @@ func selectPR() {
 		fail("no open pull requests")
 	}
 
-	width := 0
-	if w, _, err := term.GetSize(os.Stderr.Fd()); err == nil {
-		width = w - 3 // huh's "┃ " border plus a spare cell
-	}
 	wts := liveWorktrees()
 	current := currentRoot()
 	var here worktree
 	if j := slices.IndexFunc(wts, func(wt worktree) bool { return samePath(wt.path, current) }); j >= 0 {
 		here = wts[j]
 	}
-	header, lines := renderPRTable(prs, wts, here, def, width)
-	description, options := prOptions(prs, header, lines, def, here.branch)
-	if len(options) == 0 {
+	names := loadPRNames(def, prs) // def is loaded when a PR needs it
+	var selected int
+	cells, currentLines := prCells(prs, wts, here, names)
+	p := newPRPicker(cells, currentLines, pickerWidth(), &selected)
+	if len(p.options) == 0 {
 		fail("no other open pull requests")
 	}
-	var selected int
-	err := huh.NewForm(huh.NewGroup(
-		huh.NewSelect[int]().
-			Title("Select a pull request:").
-			Description(description).
-			Options(options...).
-			Value(&selected),
-	)).WithOutput(os.Stderr).Run()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, grayStyle.Render("Operation cancelled."))
-		os.Exit(1)
+	_, err := tea.NewProgram(p, tea.WithOutput(os.Stderr), tea.WithReportFocus()).Run()
+	if err != nil || p.form.State != huh.StateCompleted {
+		pickerStopped(err)
 	}
-	openPR(strconv.Itoa(prs[selected].Number))
+	checkoutPR(strconv.Itoa(prs[selected].Number), prs[selected], names)
 }
 
 // renderPRTable lays out PRs with the worktree's CHANGES when one exists, so
 // it's clear whether selecting moves to it or creates it. When no PR is on the
 // current worktree here's branch, it gets a line of its own after the PRs'.
-func renderPRTable(prs []pullRequest, wts []worktree, here worktree, def string, maxWidth int) (string, []string) {
-	const colTitle, colBranch = 2, 3
-	cells := make([][]string, len(prs))
+// current marks the lines of here's branch.
+func renderPRTable(prs []pullRequest, wts []worktree, here worktree, names prNames, maxWidth int) (header string, lines []string, current []bool) {
+	cells, current := prCells(prs, wts, here, names)
+	header, lines = layoutPRTable(cells, maxWidth)
+	return header, lines, current
+}
+
+// prCells is the PR table before it is laid out for a width, which is the
+// part that reads the worktrees: a line of cells per PR, plus the current
+// worktree's when no PR is on its branch, and which lines are its.
+func prCells(prs []pullRequest, wts []worktree, here worktree, names prNames) (cells [][]string, current []bool) {
+	cells = make([][]string, len(prs))
+	current = make([]bool, len(prs))
 	for i, pr := range prs {
 		changes := ""
-		name := prBranch(pr, def)
+		name := names.branch(pr)
+		current[i] = name == here.branch
 		if j := slices.IndexFunc(wts, func(wt worktree) bool { return wt.branch == name }); j >= 0 {
 			s := worktreeStatus(wts[j].path)
 			n, known := prBehind(wts[j].path, pr.HeadRefOid)
@@ -581,22 +608,81 @@ func renderPRTable(prs []pullRequest, wts []worktree, here worktree, def string,
 			grayStyle.Render(humanize.Time(pr.UpdatedAt)),
 		}
 	}
-	if here.path != "" && !slices.ContainsFunc(prs, func(pr pullRequest) bool { return prBranch(pr, def) == here.branch }) {
+	if here.path != "" && !slices.Contains(current, true) {
 		cells = append(cells, []string{statusCell(worktreeStatus(here.path)), "", "", ansi.Truncate(branchCell(here), 28, "…"), "", ""})
+		current = append(current, true)
 	}
+	return cells, current
+}
+
+// layoutPRTable aligns prCells' lines; with maxWidth > 0 the title and the
+// branch shrink so every line fits.
+func layoutPRTable(cells [][]string, maxWidth int) (header string, lines []string) {
+	const colTitle, colBranch = 2, 3
 	return layoutTable([]string{"WORKTREE", "PR", "TITLE", "BRANCH", "AUTHOR", "UPDATED"}, cells, maxWidth, []shrinkStep{
 		{colTitle, 30}, {colBranch, 20}, {colTitle, 10}, {colBranch, 10},
 	}, nil)
 }
 
+// prPicker runs the PR select and lays its table out again when the terminal
+// is resized.
+type prPicker struct {
+	form    *huh.Form
+	sel     *huh.Select[int]
+	options []huh.Option[int] // the select's own slice: a new Key shows on its next update
+	cells   [][]string
+	current []bool
+	width   int // the table's width
+	laid    int // the width the select shows, behind width while a filter is in use
+}
+
+func newPRPicker(cells [][]string, current []bool, width int, selected *int) *prPicker {
+	p := &prPicker{cells: cells, current: current, width: width}
+	description, options := prOptions(p.lay())
+	p.options = options
+	p.sel = huh.NewSelect[int]().Title("Select a pull request:").Description(description).Options(p.options...).Value(selected)
+	p.form = huh.NewForm(huh.NewGroup(p.sel))
+	p.form.SubmitCmd, p.form.CancelCmd = tea.Quit, tea.Interrupt
+	return p
+}
+
+// lay lays the table out for the current width.
+func (p *prPicker) lay() (string, []string, []bool) {
+	header, lines := layoutPRTable(p.cells, p.width)
+	p.laid = p.width
+	return header, lines, p.current
+}
+
+func (p *prPicker) Init() tea.Cmd { return p.form.Init() }
+
+func (p *prPicker) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if size, ok := msg.(tea.WindowSizeMsg); ok {
+		p.width = size.Width - pickerMargin
+	}
+	// As in the worktree picker, a filter shows copies of the options, so the
+	// table waits until it is cleared.
+	if p.laid != p.width && !filtering(p.sel) {
+		description, options := prOptions(p.lay())
+		for i := range options {
+			p.options[i].Key = options[i].Key
+		}
+		p.sel.Description(description)
+	}
+	form, cmd := p.form.Update(msg)
+	p.form = form.(*huh.Form)
+	return p, cmd
+}
+
+func (p *prPicker) View() string { return p.form.View() }
+
 // prOptions is the select's description and options: as in the worktree picker,
-// the line of the branch here (a PR's, or the extra one after them) goes under
-// the header, where it can't be selected.
-func prOptions(prs []pullRequest, header string, lines []string, def, here string) (string, []huh.Option[int]) {
+// the current lines go under the header, where they can't be selected. An
+// option's value is its line's index, which is its PR's.
+func prOptions(header string, lines []string, current []bool) (string, []huh.Option[int]) {
 	description := header
 	var options []huh.Option[int]
 	for i, line := range lines {
-		if i >= len(prs) || prBranch(prs[i], def) == here {
+		if current[i] {
 			description += "\n" + currentLine(line)
 			continue
 		}
@@ -612,12 +698,25 @@ func currentLine(line string) string {
 
 // openPRs returns the repository's open PRs, including ones from forks.
 func openPRs() ([]pullRequest, string) {
-	cmd := exec.Command("gh", "pr", "list", "--limit", "100", "--json", "number,title,headRefName,headRefOid,headRepositoryOwner,isDraft,isCrossRepository,author,updatedAt")
+	return ghPRs("--limit", openPRLimit, "--json", "number,title,headRefName,headRefOid,headRepositoryOwner,isDraft,isCrossRepository,author,updatedAt,url")
+}
+
+// openPRLimit is how many open PRs are asked for: more than a repository has,
+// in practice. gh fetches them 100 at a time, so a small repository pays nothing.
+const openPRLimit = "1000"
+
+// ghPRs runs gh pr list with args. The error is what gh said, or how it failed
+// when it said nothing, so a failure never looks like an empty list.
+func ghPRs(args ...string) ([]pullRequest, string) {
+	cmd := exec.Command("gh", append([]string{"pr", "list"}, args...)...)
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {
-		return nil, strings.TrimSpace(stderr.String())
+		if msg := strings.TrimSpace(stderr.String()); msg != "" {
+			return nil, msg
+		}
+		return nil, "gh pr list: " + err.Error()
 	}
 	var prs []pullRequest
 	if err := json.Unmarshal(out, &prs); err != nil {
@@ -633,7 +732,7 @@ func openPRs() ([]pullRequest, string) {
 // copies files and runs wt.hook.
 func openPR(arg string) {
 	arg = strings.TrimPrefix(arg, "#")
-	cmd := exec.Command("gh", "pr", "view", arg, "--json", "number,headRefName,headRepositoryOwner,isCrossRepository")
+	cmd := exec.Command("gh", "pr", "view", arg, "--json", "number,headRefName,headRepositoryOwner,isCrossRepository,url")
 	cmd.Stdin, cmd.Stderr = os.Stdin, os.Stderr
 	out, err := cmd.Output()
 	if err != nil {
@@ -649,21 +748,29 @@ func openPR(arg string) {
 			exitWithStatus(err)
 		}
 	}
-	name := prBranch(pr, def)
+	checkoutPR(arg, pr, loadPRNames(def, []pullRequest{pr}))
+}
+
+// checkoutPR opens pr, which gh pr checkout knows as arg, in a worktree.
+func checkoutPR(arg string, pr pullRequest, names prNames) {
+	name := names.branch(pr)
 	_, base := repoBase()
 	path, reuse := filepath.Join(base, name), false
-	if wt, ok := findWorktree(liveWorktrees(), base, name); ok {
+	wts := liveWorktrees()
+	if wt, ok := findWorktree(wts, base, name); ok {
 		if wt.branch != name { // gh would switch that worktree to the PR's branch
 			fail(fmt.Sprintf("worktree %s (%s) already exists", tilde(wt.path), label(wt)))
 		}
 		path, reuse = wt.path, true
+	} else if err := checkNotNested(wts, path, base); err != nil {
+		fail(err.Error())
 	}
 	src := currentRoot()
 	args := []string{"pr", "checkout", arg, "--branch", name}
 	if !reuse || !samePath(path, src) { // gh checks out the current worktree only without --worktree
 		args = append(args, "--worktree", path)
 	}
-	cmd = exec.Command("gh", args...)
+	cmd := exec.Command("gh", args...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stderr, os.Stderr
 	if err := cmd.Run(); err != nil {
 		exitWithStatus(err)
@@ -675,14 +782,155 @@ func openPR(arg string) {
 	setUpWorktree(src, path, base)
 }
 
-// prBranch is the local branch gh pr checkout uses for the PR: its head branch,
-// or <owner>/<branch> for a fork's branch named like the repository's default
-// branch def (as gh gets it from GitHub), so it doesn't collide with ours.
-func prBranch(pr pullRequest, def string) string {
-	if pr.IsCrossRepository && pr.HeadRefName == def {
+// prNames ties PRs to local branches the way gh does.
+type prNames struct {
+	def   string            // the repository's default branch
+	bases []string          // "owner/name" of the repository the PRs are in, under each name it goes by
+	heads map[string]prHead // the local branches
+}
+
+// prHead is the head of a local branch's PR as gh pr view works it out when
+// it is given no PR: the number in a branch.<name>.merge of
+// refs/pull/<number>/head or, without one, the repository the branch pushes to
+// (empty when it has no remote) and the branch's name there.
+type prHead struct {
+	number int
+	repo   string
+	branch string
+}
+
+// loadPRNames reads the local branches. The base repository is known by the
+// name in the PRs' URLs and by the name of the remote gh takes for it, which
+// is an older one when the repository was renamed or moved since the clone.
+func loadPRNames(def string, prs []pullRequest) prNames {
+	heads, bases := localBranches()
+	if len(prs) > 0 {
+		repo, _, _ := strings.Cut(prs[0].URL, "/pull/")
+		bases = append(bases, repoOf(repo))
+	}
+	return prNames{def: def, bases: bases, heads: heads}
+}
+
+// owner is what gh qualifies the head with: the owner of the repository the
+// branch pushes to when that isn't the base repository, else nothing.
+func (h prHead) owner(bases []string) string {
+	if h.repo == "" || slices.ContainsFunc(bases, func(base string) bool { return strings.EqualFold(h.repo, base) }) {
+		return ""
+	}
+	owner, _, _ := strings.Cut(h.repo, "/")
+	return owner
+}
+
+// isOf reports whether pr is the PR of the branch with this head: gh compares
+// the head's label, <owner>:<branch> for a PR from a fork and <branch>
+// otherwise.
+func (h prHead) isOf(pr pullRequest, bases []string) bool {
+	if h.number != 0 {
+		return pr.Number == h.number
+	}
+	prOwner := ""
+	if pr.IsCrossRepository {
+		prOwner = pr.HeadRepositoryOwner.Login
+	}
+	return pr.HeadRefName == h.branch && strings.EqualFold(prOwner, h.owner(bases))
+}
+
+// branch is the local branch for the PR: its head branch, as gh pr checkout
+// names it, or <owner>/<branch> for a fork's branch whose name is taken, by
+// the repository's default branch or by a local branch that isn't this PR's.
+// gh would fast-forward that branch to the PR and make it pull from the fork.
+func (n prNames) branch(pr pullRequest) string {
+	if !pr.IsCrossRepository {
+		return pr.HeadRefName
+	}
+	if h, taken := n.heads[pr.HeadRefName]; pr.HeadRefName == n.def || (taken && !h.isOf(pr, n.bases)) {
 		return pr.HeadRepositoryOwner.Login + "/" + pr.HeadRefName
 	}
 	return pr.HeadRefName
+}
+
+// localBranches reads each local branch's PR head from the git config, by gh's
+// rules: the remote is branch.<name>.pushRemote, else remote.pushDefault, else
+// branch.<name>.remote, and the branch keeps its name unless push.default is
+// upstream (or tracking), which pushes to the branch it merges from.
+//
+// One case goes beyond gh: a branch that pushes to a URL, which is how gh pr
+// checkout sets up a fork's PR, takes the name it merges from. gh-wt opens
+// such a PR as <owner>/<branch> when the name is taken, and gh itself would
+// then look for a head named like the local branch and not find the PR.
+//
+// bases are the names of the base repository that the remotes give: the one
+// set with gh repo set-default, or the only remote there is, as in gh.
+func localBranches() (heads map[string]prHead, bases []string) {
+	heads = map[string]prHead{}
+	names, _ := git("for-each-ref", "--format=%(refname:short)", "refs/heads/")
+	for _, name := range strings.Fields(names) {
+		heads[name] = prHead{branch: name}
+	}
+	out, _ := git("config", "--get-regexp", `^(branch\..*\.(remote|pushremote|merge)|remote\..*\.(url|gh-resolved)|remote\.pushdefault|push\.default)$`)
+	urls, remotes, pushRemotes, merges := map[string]string{}, map[string]string{}, map[string]string{}, map[string]string{}
+	resolved := map[string]string{} // remote.<name>.gh-resolved: "base", or the repository gh resolved it to
+	pushDefault, remotePushDefault := "", ""
+	for _, line := range strings.Split(out, "\n") {
+		key, value, _ := strings.Cut(line, " ")
+		switch key {
+		case "push.default":
+			pushDefault = value
+			continue
+		case "remote.pushdefault":
+			remotePushDefault = value
+			continue
+		}
+		section, rest, _ := strings.Cut(key, ".")
+		i := strings.LastIndex(rest, ".")
+		if i < 0 {
+			continue
+		}
+		name, variable := rest[:i], rest[i+1:]
+		switch {
+		case section == "remote" && variable == "gh-resolved":
+			resolved[name] = value
+		case section == "remote":
+			urls[name] = value
+		case variable == "remote":
+			remotes[name] = value
+		case variable == "pushremote":
+			pushRemotes[name] = value
+		default:
+			merges[name] = value
+		}
+	}
+	pullNumber := regexp.MustCompile(`^refs/pull/(\d+)/head$`)
+	for name, h := range heads {
+		if m := pullNumber.FindStringSubmatch(merges[name]); m != nil {
+			h.number, _ = strconv.Atoi(m[1])
+			heads[name] = h
+			continue
+		}
+		remote := cmp.Or(pushRemotes[name], remotePushDefault, remotes[name])
+		url, named := urls[remote]
+		if !named {
+			url = remote // a URL, as gh pr checkout sets for a fork, or "." for a local branch
+		}
+		h.repo = repoOf(url)
+		merged, tracks := strings.CutPrefix(merges[name], "refs/heads/")
+		if tracks && (pushDefault == "upstream" || pushDefault == "tracking" || (!named && h.repo != "")) {
+			h.branch = merged
+		}
+		heads[name] = h
+	}
+	for name, value := range resolved {
+		if value == "base" {
+			value = urls[name]
+		}
+		bases = append(bases, repoOf(value))
+	}
+	if len(resolved) == 0 && len(urls) == 1 {
+		for _, url := range urls {
+			bases = append(bases, repoOf(url))
+		}
+	}
+	return heads, bases
 }
 
 // repoDefaultBranch is the repository's default branch on GitHub.
@@ -732,12 +980,8 @@ func renameWorktree(old []string, newName string, force bool) (string, error) {
 		if _, err := os.Lstat(newPath); err == nil {
 			return "", fmt.Errorf("%s already exists", tilde(newPath))
 		}
-		// Never move a worktree into another one (or into itself): deleting the
-		// outer worktree later would delete it too.
-		for dir := filepath.Dir(newPath); within(dir, base) && !samePath(dir, base); dir = filepath.Dir(dir) {
-			if slices.ContainsFunc(wts, func(wt worktree) bool { return samePath(wt.path, dir) }) {
-				return "", fmt.Errorf("%s would be inside the worktree %s", tilde(newPath), tilde(dir))
-			}
+		if err := checkNotNested(wts, newPath, base); err != nil { // or into itself
+			return "", err
 		}
 	}
 
@@ -810,6 +1054,17 @@ func undoBranchRename(mainRoot, oldName, newName, overwritten string) error {
 		}
 	}
 	return fmt.Errorf("failed to move worktree; renamed the branch back to %q", oldName)
+}
+
+// checkNotNested refuses a path inside one of the worktrees under base:
+// deleting the outer worktree later would delete the inner one's files too.
+func checkNotNested(wts []worktree, path, base string) error {
+	for dir := filepath.Dir(path); within(dir, base) && !samePath(dir, base); dir = filepath.Dir(dir) {
+		if slices.ContainsFunc(wts, func(wt worktree) bool { return samePath(wt.path, dir) }) {
+			return fmt.Errorf("%s would be inside the worktree %s", tilde(path), tilde(dir))
+		}
+	}
+	return nil
 }
 
 // removeEmptyParents removes dir and its parents while they are empty
@@ -919,11 +1174,9 @@ func setUpWorktree(src, path, base string) {
 		copyFiles(src, path, base)
 	}
 
-	hooks, _ := git("config", "--get-all", "wt.hook")
-	for _, hook := range strings.Split(hooks, "\n") {
-		if hook == "" {
-			continue
-		}
+	// -z: a hook may span lines.
+	hooks, _ := exec.Command("git", "config", "-z", "--get-all", "wt.hook").Output()
+	for _, hook := range strings.FieldsFunc(string(hooks), func(r rune) bool { return r == 0 }) {
 		cmd := exec.Command("sh", "-c", hook)
 		cmd.Dir = path
 		cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
@@ -967,22 +1220,33 @@ func branchExists(name string) bool {
 // wt.copymodified select from the src worktree into dst. Directories are listed
 // as one entry and copied whole, cloned on APFS with cp -c.
 func copyFiles(src, dst, base string) {
+	on := func(key string) bool { // literal "true", as git-wt reads it
+		value, _ := git("config", "--get", key)
+		return value == "true"
+	}
+	// An untracked directory is one entry, copied whole, only when its ignored
+	// files are wanted too; otherwise git lists its files without them.
+	untracked := []string{"--others", "--exclude-standard"}
+	if on("wt.copyignored") {
+		untracked = append(untracked, "--directory")
+	}
 	lists := []struct {
 		key  string
 		args []string
 	}{
 		{"wt.copyignored", []string{"--others", "--ignored", "--exclude-standard", "--directory"}},
-		{"wt.copyuntracked", []string{"--others", "--exclude-standard", "--directory"}},
+		{"wt.copyuntracked", untracked},
 		{"wt.copymodified", []string{"--modified"}},
 	}
 	var entries []string
 	for _, l := range lists {
-		if on, _ := git("config", "--get", l.key); on != "true" { // literal "true", as git-wt reads it
+		if !on(l.key) {
 			continue
 		}
-		out, err := git(append([]string{"-C", src, "ls-files"}, l.args...)...)
-		if err == nil && out != "" {
-			entries = append(entries, strings.Split(out, "\n")...)
+		// -z: without it git quotes names with non-ASCII or special characters.
+		out, err := exec.Command("git", append([]string{"-C", src, "ls-files", "-z"}, l.args...)...).Output()
+		if err == nil {
+			entries = append(entries, strings.FieldsFunc(string(out), func(r rune) bool { return r == 0 })...)
 		}
 	}
 	slices.Sort(entries)
@@ -1001,21 +1265,50 @@ func copyFiles(src, dst, base string) {
 			continue
 		}
 		from, to := filepath.Join(src, e), filepath.Join(dst, e)
+		if !exists(from) { // ls-files --modified lists deleted files too
+			continue
+		}
 		if (skipBase && within(from, base)) || samePath(from, base) {
 			continue
 		}
 		if strings.HasSuffix(e, "/") {
 			copiedDir = e
-			from += "/." // copy the contents, so an existing dst directory is merged into
 		}
-		err := os.MkdirAll(filepath.Dir(to), 0o755)
-		if err == nil {
-			err = exec.Command("cp", cpFlags, from, to).Run()
-		}
-		if err != nil {
+		if err := copyEntry(from, to, base, cpFlags); err != nil {
 			fmt.Fprintln(os.Stderr, grayStyle.Render(fmt.Sprintf("warning: failed to copy %s: %v", e, err)))
 		}
 	}
+}
+
+// copyEntry copies the file or directory from to to. A directory that holds
+// the worktree base (wt.basedir two or more levels deep) is copied entry by
+// entry around it, or every sibling worktree would be copied in.
+func copyEntry(from, to, base, cpFlags string) error {
+	info, err := os.Lstat(from)
+	if err != nil {
+		return err
+	}
+	if info.IsDir() && within(base, from) {
+		if samePath(from, base) {
+			return nil
+		}
+		children, err := os.ReadDir(from)
+		if err != nil {
+			return err
+		}
+		var errs []error
+		for _, c := range children {
+			errs = append(errs, copyEntry(filepath.Join(from, c.Name()), filepath.Join(to, c.Name()), base, cpFlags))
+		}
+		return errors.Join(errs...)
+	}
+	if info.IsDir() {
+		from += "/." // copy the contents, so an existing directory is merged into
+	}
+	if err := os.MkdirAll(filepath.Dir(to), 0o755); err != nil {
+		return err
+	}
+	return exec.Command("cp", cpFlags, from, to).Run()
 }
 
 // within reports whether path is dir or inside it.
@@ -1090,12 +1383,19 @@ func noEcho() func() {
 	}
 }
 
-// spin runs fn behind a spinner on stderr when that's a terminal.
+// spin runs fn behind a spinner on stderr when that's a terminal. The spinner
+// returns on Ctrl+C while fn still runs, so what fn loads can't be used then.
 func spin(title string, fn func()) {
-	if isatty.IsTerminal(os.Stderr.Fd()) {
-		_ = spinner.New().Title(title).Output(os.Stderr).Action(fn).Run()
-	} else {
+	if !isatty.IsTerminal(os.Stderr.Fd()) {
 		fn()
+		return
+	}
+	err := spinner.New().Title(title).Output(os.Stderr).Action(fn).Run()
+	if errors.Is(err, tea.ErrInterrupted) {
+		os.Exit(130)
+	}
+	if err != nil {
+		fail(err.Error())
 	}
 }
 
@@ -1113,11 +1413,11 @@ func localRows(wts []worktree, current string) []row {
 	return rows
 }
 
-// worktreeStatus reads the worktree's git status, empty when git fails.
+// worktreeStatus reads the worktree's git status, unknown when git fails.
 func worktreeStatus(path string) status {
 	out, err := git("--no-optional-locks", "-C", path, "status", "--porcelain=v2", "--branch")
 	if err != nil {
-		return status{}
+		return status{unknown: true}
 	}
 	return parseStatus(out)
 }
@@ -1204,9 +1504,8 @@ func (t *liveTable) update(msg tea.Msg) tea.Cmd {
 			}
 			t.rows[i].pr = p.pr
 			if p.pr.State == "OPEN" {
-				if p.known { // the PR head is fresher than the remote-tracking ref
-					t.rows[i].status.behind = p.behind
-				}
+				// As in renderPRTable: the PR head may be fresher than the upstream.
+				t.rows[i].status.behind = max(t.rows[i].status.behind, p.behind)
 				t.rows[i].status.remoteNew = !p.known
 			}
 		}
@@ -1306,6 +1605,7 @@ func (p *picker) Init() tea.Cmd { return tea.Batch(p.form.Init(), p.init()) }
 func (p *picker) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if size, ok := msg.(tea.WindowSizeMsg); ok {
 		p.size = size
+		p.width = size.Width - pickerMargin // lay the table out again for the new width
 	}
 	cmd := p.update(msg)
 	// A filter shows copies of the options, which keep the old lines while the
@@ -1351,7 +1651,7 @@ func (p *picker) refresh() {
 }
 
 // filtering reports whether a filter is being typed or narrows the options.
-func filtering(s *huh.Select[string]) bool {
+func filtering[T comparable](s *huh.Select[T]) bool {
 	if s.GetFiltering() {
 		return true
 	}
@@ -1481,6 +1781,9 @@ func prBehind(path, headOid string) (n int, known bool) {
 }
 
 func statusCell(s status) string {
+	if s.unknown { // not the clean mark: nothing is known about it
+		return grayStyle.Render("unknown")
+	}
 	var parts []string
 	add := func(n int, prefix string, style lipgloss.Style) {
 		if n > 0 {
@@ -1544,25 +1847,56 @@ func parseStatus(out string) status {
 
 // fetchPRs returns the newest PR per head branch, or gh's error message.
 func fetchPRs() (map[string]pullRequest, string) {
-	cmd := exec.Command("gh", "pr", "list", "--state", "all", "--limit", "200", "--json", "headRefName,headRefOid,headRepository,isCrossRepository,number,state,isDraft")
-	var stderr strings.Builder
-	cmd.Stderr = &stderr
-	out, err := cmd.Output()
-	if err != nil {
-		return nil, strings.TrimSpace(stderr.String())
+	// The open PRs, however old, and the newest PRs of any state: an open PR
+	// older than those would otherwise be missing here and shown in gh wt -p.
+	const fields = "headRefName,headRefOid,headRepositoryOwner,isCrossRepository,number,state,isDraft,url"
+	type result struct {
+		prs []pullRequest
+		msg string
 	}
-	var prs []pullRequest
-	if err := json.Unmarshal(out, &prs); err != nil {
-		return nil, err.Error()
+	recent := make(chan result, 1)
+	go func() {
+		prs, msg := ghPRs("--state", "all", "--limit", "200", "--json", fields)
+		recent <- result{prs, msg}
+	}()
+	// The default branch as GitHub has it, which is what gh goes by. Without
+	// it (the lookup failed) no branch is treated as the default one.
+	def := make(chan string, 1)
+	go func() {
+		name, _ := repoDefaultBranch()
+		def <- name
+	}()
+	open, msg := ghPRs("--limit", openPRLimit, "--json", fields)
+	r := <-recent
+	if msg == "" {
+		msg = r.msg
 	}
-	origin := originRepo()
-	m := make(map[string]pullRequest, len(prs))
-	for _, pr := range prs { // gh returns newest first; an open PR wins over closed ones
-		if prev, ok := m[pr.HeadRefName]; inOrigin(pr, origin) && (!ok || (prev.State != "OPEN" && pr.State == "OPEN")) {
-			m[pr.HeadRefName] = pr
+	if msg != "" {
+		return nil, msg
+	}
+	prs := append(open, r.prs...)
+	return prByBranch(prs, loadPRNames(<-def, prs)), ""
+}
+
+// prByBranch gives each local branch its PR as gh pr view would: of the PRs
+// with the branch's head, an open one, else the newest (prs come newest
+// first). For the default branch only an open PR counts, as in gh.
+func prByBranch(prs []pullRequest, names prNames) map[string]pullRequest {
+	m := make(map[string]pullRequest, len(names.heads))
+	for _, pr := range prs {
+		for branch, h := range names.heads {
+			if !h.isOf(pr, names.bases) {
+				continue
+			}
+			if pr.State != "OPEN" && names.def != "" && h.number == 0 && h.owner(names.bases) == "" && h.branch == names.def {
+				continue
+			}
+			if prev, ok := m[branch]; !ok || (prev.State != "OPEN" && pr.State == "OPEN") {
+				m[branch] = pr
+			}
 		}
 	}
-	return m, ""
+	return m
 }
 
 // liveWorktrees is mustWorktrees without prunable entries, whose directory is gone.
@@ -1611,25 +1945,14 @@ func currentRoot() string {
 	return root
 }
 
-// originRepo is "owner/name" parsed from origin's URL, or "" if it can't be.
-func originRepo() string {
-	url, err := git("remote", "get-url", "origin")
-	if err != nil {
-		return ""
-	}
+// repoOf is "owner/name" parsed from a repository's URL, or "" if it can't be.
+func repoOf(url string) string {
 	url = strings.TrimSuffix(strings.TrimSuffix(url, "/"), ".git")
 	parts := strings.FieldsFunc(url, func(r rune) bool { return r == '/' || r == ':' })
 	if len(parts) < 2 {
 		return ""
 	}
 	return parts[len(parts)-2] + "/" + parts[len(parts)-1]
-}
-
-// inOrigin reports whether the PR's branch can be found on origin: a PR from
-// the same repository, or from origin itself when origin is a fork. A
-// stranger's fork branch that merely shares a local branch's name is not.
-func inOrigin(pr pullRequest, origin string) bool {
-	return !pr.IsCrossRepository || (origin != "" && strings.EqualFold(pr.HeadRepository.NameWithOwner, origin))
 }
 
 func git(args ...string) (string, error) {

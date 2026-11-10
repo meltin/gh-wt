@@ -43,7 +43,7 @@ gh-wt follows [k1LoW/git-wt](https://github.com/k1LoW/git-wt): the same target r
 
 | Column      | Content                                                                                 |
 | ----------- | --------------------------------------------------------------------------------------- |
-| BRANCH      | Branch name (up to 28 cells), or `(detached)`                                           |
+| BRANCH      | Branch name (up to 26 cells), or `(detached)`                                           |
 | CHANGES     | `↑` ahead / `↓` behind upstream, `!` conflicts, `+` staged, `~` modified, `?` untracked |
 | PR          | Number and state (open / draft / merged / closed) of the branch's PR, an open one first |
 | LAST COMMIT | Subject and relative time                                                               |
@@ -51,6 +51,7 @@ gh-wt follows [k1LoW/git-wt](https://github.com/k1LoW/git-wt): the same target r
 
 - The table appears as soon as git has read the worktrees. The PR column shows a spinner until `gh` answers, then fills in without moving the other columns, and you can move or pick in the meantime. Piped, `gh wt -l` waits and prints once.
 - For a branch with an open PR, `↓` also counts commits pushed to the PR that the worktree doesn't have yet, without fetching. `↓N` means there are such commits, but they haven't been fetched, so they can't be counted.
+- CHANGES is `unknown` for a worktree whose status can't be read (a locked worktree on a volume that isn't mounted, for one).
 - In the picker, the current worktree is shown grayed out under the header and can't be selected.
 - When the table is wider than the terminal, PATH, the commit subject and BRANCH are shortened, in that order.
 
@@ -116,7 +117,7 @@ The checkout is `gh pr checkout --worktree`, so the PR opens just as gh opens it
 
 - The PR is fetched first. Plain `gh wt <branch>` doesn't fetch.
 - The new branch tracks the PR's branch, and an existing branch is fast-forwarded (or refused when it can't be).
-- A fork's branch named like the default branch gets gh's `<owner>/<branch>` name.
+- A fork's branch named like the default branch gets gh's `<owner>/<branch>` name. So does one named like a local branch that isn't that PR's, so gh doesn't fast-forward your branch to it.
 - A URL of another repository's PR fetches that PR, as `gh pr checkout <url>` does.
 
 gh-wt adds only the path under `wt.basedir`, and for a new worktree, the file copies and `wt.hook`.
@@ -165,6 +166,8 @@ When invoked through the shell integration on the current worktree, the shell fu
 ## Install
 
 You need the [GitHub CLI](https://cli.github.com/), installed and authenticated, and a [Nerd Font](https://www.nerdfonts.com/) in your terminal.
+
+gh-wt is for macOS and Linux. Windows binaries are published but untested: copying files (`wt.copy*`) calls `cp`, hooks run with `sh`, and the shell function is for zsh, so it needs an environment that has them, such as WSL or Git Bash.
 
 ``` console
 $ gh extension install meltin/gh-wt
