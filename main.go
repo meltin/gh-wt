@@ -948,11 +948,7 @@ func renameWorktree(old []string, newName string, force bool) (string, error) {
 	if !movesDir && !renamesBranch {
 		return "", fmt.Errorf("worktree %q is already named %q", src.branch, newName)
 	}
-	// On a case-insensitive filesystem a name that differs only in case is the
-	// same directory and, to git, the same branch; git refuses both renames.
-	caseOnlyDir := movesDir && sameFile(src.path, newPath)
-	caseOnlyBranch := renamesBranch && strings.EqualFold(src.branch, newName) && sameRef(mainRoot, src.branch, newName)
-	if movesDir && !caseOnlyDir {
+	if movesDir {
 		if _, err := os.Lstat(newPath); err == nil {
 			return "", fmt.Errorf("%s already exists", tilde(newPath))
 		}
@@ -966,12 +962,9 @@ func renameWorktree(old []string, newName string, force bool) (string, error) {
 	isCurrent := samePath(src.path, current)
 	wd, _ := os.Getwd()
 	overwritten, _ := git("show-ref", "--verify", "--hash", "refs/heads/"+newName) // restored if the move fails
-	if caseOnlyBranch {
-		overwritten = "" // that is the branch itself
-	}
 	if renamesBranch {
 		flag := "-m"
-		if force || caseOnlyBranch { // git takes a change of case only with -M
+		if force {
 			flag = "-M"
 		}
 		if err := gitLoud("-C", mainRoot, "branch", flag, "--", src.branch, newName); err != nil {
@@ -989,16 +982,7 @@ func renameWorktree(old []string, newName string, force bool) (string, error) {
 			created = dir
 		}
 		err := os.MkdirAll(filepath.Dir(newPath), 0o755)
-		switch {
-		case err != nil:
-		case caseOnlyDir: // git can't move a directory onto itself: go through another name
-			tmp := newPath + ".gh-wt-rename"
-			if err = gitLoud(append(args, src.path, tmp)...); err == nil {
-				if err = gitLoud(append(args, tmp, newPath)...); err != nil {
-					_ = gitLoud(append(args, tmp, src.path)...)
-				}
-			}
-		default:
+		if err == nil {
 			err = gitLoud(append(args, src.path, newPath)...)
 		}
 		if err != nil {
@@ -1024,24 +1008,6 @@ func renameWorktree(old []string, newName string, force bool) (string, error) {
 		return newPath, nil
 	}
 	return leaveIfGone("", wd, mainRoot), nil
-}
-
-// sameFile reports whether two paths that exist are one file, as two spellings
-// of a name are on a case-insensitive filesystem.
-func sameFile(a, b string) bool {
-	ia, errA := os.Stat(a)
-	ib, errB := os.Stat(b)
-	return errA == nil && errB == nil && os.SameFile(ia, ib)
-}
-
-// sameRef reports whether the branch other is only another spelling of branch:
-// it resolves (the filesystem ignores case) but isn't among the branches.
-func sameRef(mainRoot, branch, other string) bool {
-	if _, err := git("-C", mainRoot, "show-ref", "--verify", "--quiet", "refs/heads/"+other); err != nil {
-		return false
-	}
-	listed, _ := git("-C", mainRoot, "for-each-ref", "--format=%(refname:short)", "refs/heads/")
-	return !slices.Contains(strings.Split(listed, "\n"), other)
 }
 
 // undoBranchRename restores the branch name after the worktree failed to move

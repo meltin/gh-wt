@@ -1121,30 +1121,6 @@ func TestCLISilentGhFailure(t *testing.T) {
 	}
 }
 
-// -m can change only the case of a name where the filesystem ignores case.
-func TestCLIRenameCaseOnly(t *testing.T) {
-	repo, git, wt := cliRepo(t)
-	if !sameFile(repo, strings.ToUpper(repo)) {
-		t.Skip("the filesystem is case-sensitive")
-	}
-	if _, stderr, err := wt("Foo"); err != nil {
-		t.Fatalf("create: %v\n%s", err, stderr)
-	}
-	if _, stderr, err := wt("-m", "Foo", "foo"); err != nil {
-		t.Fatalf("-m Foo foo: %v\n%s", err, stderr)
-	}
-	if branches := git("branch", "--format=%(refname:short)"); branches != "foo\nmain" {
-		t.Errorf("branches = %q", branches)
-	}
-	entries, _ := os.ReadDir(filepath.Join(repo, ".wt"))
-	if len(entries) != 1 || entries[0].Name() != "foo" {
-		t.Errorf(".wt holds %v, want foo", entries)
-	}
-	if list := git("worktree", "list", "--porcelain"); !strings.Contains(list, "/.wt/foo\n") {
-		t.Errorf("git should know the worktree as foo:\n%s", list)
-	}
-}
-
 // wt.copyuntracked leaves out the ignored files of an untracked directory
 // unless wt.copyignored asks for them.
 func TestCLICopyUntrackedWithoutIgnored(t *testing.T) {
