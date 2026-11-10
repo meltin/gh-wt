@@ -517,11 +517,7 @@ func selectPR() {
 			def, defErr = repoDefaultBranch()
 		}
 	}
-	if isatty.IsTerminal(os.Stderr.Fd()) {
-		_ = spinner.New().Title("Loading pull requests...").Output(os.Stderr).Action(load).Run()
-	} else {
-		load()
-	}
+	spin("Loading pull requests...", load)
 	if prErr != "" {
 		fail(prErr)
 	}
@@ -1150,12 +1146,19 @@ func noEcho() func() {
 	}
 }
 
-// spin runs fn behind a spinner on stderr when that's a terminal.
+// spin runs fn behind a spinner on stderr when that's a terminal. The spinner
+// returns on Ctrl+C while fn still runs, so what fn loads can't be used then.
 func spin(title string, fn func()) {
-	if isatty.IsTerminal(os.Stderr.Fd()) {
-		_ = spinner.New().Title(title).Output(os.Stderr).Action(fn).Run()
-	} else {
+	if !isatty.IsTerminal(os.Stderr.Fd()) {
 		fn()
+		return
+	}
+	err := spinner.New().Title(title).Output(os.Stderr).Action(fn).Run()
+	if errors.Is(err, tea.ErrInterrupted) {
+		os.Exit(130)
+	}
+	if err != nil {
+		fail(err.Error())
 	}
 }
 
