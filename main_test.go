@@ -877,6 +877,31 @@ func TestCLIDeleteBranchBeforeDirectory(t *testing.T) {
 	}
 }
 
+// Names git would quote (non-ASCII, quotes, spaces at the ends) are copied too.
+func TestCLICopyQuotedNames(t *testing.T) {
+	repo, git, wt := cliRepo(t)
+	git("config", "wt.copyuntracked", "true")
+	names := []string{"日本語.txt", `a "quoted" name.txt`, " spaced ", "dir/日本語/x.txt"}
+	for _, name := range names {
+		path := filepath.Join(repo, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	path, stderr, err := wt("copy")
+	if err != nil || strings.Contains(stderr, "warning") {
+		t.Fatalf("create: %v\n%s", err, stderr)
+	}
+	for _, name := range names {
+		if !exists(filepath.Join(path, name)) {
+			t.Errorf("%q was not copied", name)
+		}
+	}
+}
+
 // gitEnv keeps the user's git config out of a test and lets it commit.
 func gitEnv(t *testing.T) {
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)

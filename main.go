@@ -1003,9 +1003,10 @@ func copyFiles(src, dst, base string) {
 		if on, _ := git("config", "--get", l.key); on != "true" { // literal "true", as git-wt reads it
 			continue
 		}
-		out, err := git(append([]string{"-C", src, "ls-files"}, l.args...)...)
-		if err == nil && out != "" {
-			entries = append(entries, strings.Split(out, "\n")...)
+		// -z: without it git quotes names with non-ASCII or special characters.
+		out, err := exec.Command("git", append([]string{"-C", src, "ls-files", "-z"}, l.args...)...).Output()
+		if err == nil {
+			entries = append(entries, strings.FieldsFunc(string(out), func(r rune) bool { return r == 0 })...)
 		}
 	}
 	slices.Sort(entries)
