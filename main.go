@@ -1669,14 +1669,20 @@ func fetchPRs() (map[string]pullRequest, string) {
 	if msg != "" {
 		return nil, msg
 	}
-	origin := originRepo()
+	return prByBranch(prs, originRepo()), ""
+}
+
+// prByBranch picks one PR per head branch from prs, which gh lists newest
+// first: the newest, unless an older one is open. PRs whose branch isn't on
+// origin are left out.
+func prByBranch(prs []pullRequest, origin string) map[string]pullRequest {
 	m := make(map[string]pullRequest, len(prs))
-	for _, pr := range prs { // gh returns newest first; an open PR wins over closed ones
+	for _, pr := range prs {
 		if prev, ok := m[pr.HeadRefName]; inOrigin(pr, origin) && (!ok || (prev.State != "OPEN" && pr.State == "OPEN")) {
 			m[pr.HeadRefName] = pr
 		}
 	}
-	return m, ""
+	return m
 }
 
 // liveWorktrees is mustWorktrees without prunable entries, whose directory is gone.
