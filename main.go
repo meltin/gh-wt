@@ -299,17 +299,13 @@ func selectWorktree() {
 	if !slices.ContainsFunc(wts, func(wt worktree) bool { return !samePath(wt.path, current) }) {
 		fail("no other worktrees")
 	}
-	width := 0
-	if w, _, err := term.GetSize(os.Stderr.Fd()); err == nil {
-		width = w - pickerMargin
-	}
 	prs := lookupPRs(wts)
 	var rows []row
 	var prWidth int
 	spin("Loading worktrees...", func() { rows, prWidth = localRows(wts, current), prColumnWidth() })
 
 	var selected string
-	p := newPicker(rows, width, prWidth, prs, &selected)
+	p := newPicker(rows, pickerWidth(), prWidth, prs, &selected)
 	_, err := tea.NewProgram(p, tea.WithOutput(os.Stderr), tea.WithReportFocus()).Run()
 	if err != nil || p.form.State != huh.StateCompleted {
 		pickerStopped(err)
@@ -321,6 +317,15 @@ func selectWorktree() {
 // pickerMargin is what a picker's table can't use of the terminal's width:
 // huh's "┃ " border plus a spare cell.
 const pickerMargin = 3
+
+// pickerWidth is the width a picker's table has, 0 when it can't be known.
+func pickerWidth() int {
+	w, _, err := term.GetSize(os.Stderr.Fd())
+	if err != nil {
+		return 0
+	}
+	return w - pickerMargin
+}
 
 // pickerStopped ends a picker that didn't complete: cancelled by the user, or
 // failed with err (no terminal to draw on, for one).
@@ -543,17 +548,13 @@ func selectPR() {
 		fail("no open pull requests")
 	}
 
-	width := 0
-	if w, _, err := term.GetSize(os.Stderr.Fd()); err == nil {
-		width = w - pickerMargin
-	}
 	wts := liveWorktrees()
 	current := currentRoot()
 	var here worktree
 	if j := slices.IndexFunc(wts, func(wt worktree) bool { return samePath(wt.path, current) }); j >= 0 {
 		here = wts[j]
 	}
-	description, options := prOptions(renderPRTable(prs, wts, here, def, width))
+	description, options := prOptions(renderPRTable(prs, wts, here, def, pickerWidth()))
 	if len(options) == 0 {
 		fail("no other open pull requests")
 	}
@@ -568,7 +569,7 @@ func selectPR() {
 	if err != nil {
 		pickerStopped(err)
 	}
-	openPR(strconv.Itoa(prs[selected].Number))
+	checkoutPR(strconv.Itoa(prs[selected].Number), prs[selected], def) // def is loaded when a PR needs it
 }
 
 // renderPRTable lays out PRs with the worktree's CHANGES when one exists, so
@@ -681,6 +682,12 @@ func openPR(arg string) {
 			exitWithStatus(err)
 		}
 	}
+	checkoutPR(arg, pr, def)
+}
+
+// checkoutPR opens pr, which gh pr checkout knows as arg, in a worktree. def
+// is the repository's default branch, needed for a PR from a fork.
+func checkoutPR(arg string, pr pullRequest, def string) {
 	name := prBranch(pr, def)
 	_, base := repoBase()
 	path, reuse := filepath.Join(base, name), false
@@ -698,7 +705,7 @@ func openPR(arg string) {
 	if !reuse || !samePath(path, src) { // gh checks out the current worktree only without --worktree
 		args = append(args, "--worktree", path)
 	}
-	cmd = exec.Command("gh", args...)
+	cmd := exec.Command("gh", args...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stderr, os.Stderr
 	if err := cmd.Run(); err != nil {
 		exitWithStatus(err)

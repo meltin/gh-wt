@@ -115,12 +115,7 @@ func TestDeleteTargets(t *testing.T) {
 	gitEnv(t)
 	dir, _ := filepath.EvalSymlinks(t.TempDir())
 	repo := filepath.Join(dir, "repo")
-	run := func(args ...string) {
-		t.Helper()
-		if out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
-	}
+	run := gitIn(t, repo)
 	if err := os.MkdirAll(repo, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -175,12 +170,7 @@ func TestDeleteTargetsEdgeCases(t *testing.T) {
 	gitEnv(t)
 	dir, _ := filepath.EvalSymlinks(t.TempDir())
 	repo := filepath.Join(dir, "repo")
-	run := func(args ...string) {
-		t.Helper()
-		if out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
-	}
+	run := gitIn(t, repo)
 	if err := os.MkdirAll(repo, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -224,6 +214,7 @@ func TestDeleteTargetsEdgeCases(t *testing.T) {
 		t.Fatalf("clone --bare: %v\n%s", err, out)
 	}
 	repo = bare
+	run = gitIn(t, repo)
 	run("worktree", "add", "-q", "-b", "feat", filepath.Join(bare, "wt/feat"))
 	run("worktree", "add", "-q", filepath.Join(bare, "wt/trunk"), "trunk")
 	t.Chdir(filepath.Join(bare, "wt/feat"))
@@ -243,12 +234,7 @@ func TestRenameWorktree(t *testing.T) {
 	gitEnv(t)
 	dir, _ := filepath.EvalSymlinks(t.TempDir())
 	repo := filepath.Join(dir, "repo")
-	run := func(args ...string) {
-		t.Helper()
-		if out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
-	}
+	run := gitIn(t, repo)
 	exists := func(rel string) bool {
 		_, err := os.Stat(filepath.Join(repo, rel))
 		return err == nil
@@ -310,12 +296,7 @@ func TestRenameWorktreeConflicts(t *testing.T) {
 	gitEnv(t)
 	dir, _ := filepath.EvalSymlinks(t.TempDir())
 	repo := filepath.Join(dir, "repo")
-	run := func(args ...string) {
-		t.Helper()
-		if out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
-	}
+	run := gitIn(t, repo)
 	exists := func(p string) bool { _, err := os.Stat(p); return err == nil }
 	if err := os.MkdirAll(filepath.Join(dir, "real"), 0o755); err != nil {
 		t.Fatal(err)
@@ -373,12 +354,7 @@ func TestRenameWorktreeFailedMove(t *testing.T) {
 	dir, _ := filepath.EvalSymlinks(t.TempDir())
 	repo := filepath.Join(dir, "repo")
 	wt := filepath.Join(repo, ".wt")
-	run := func(args ...string) {
-		t.Helper()
-		if out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
-	}
+	run := gitIn(t, repo)
 	if err := os.MkdirAll(repo, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -424,12 +400,7 @@ func TestQualifyStartPoint(t *testing.T) {
 	gitEnv(t)
 	dir, _ := filepath.EvalSymlinks(t.TempDir())
 	repo := filepath.Join(dir, "repo")
-	run := func(args ...string) {
-		t.Helper()
-		if out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
-	}
+	run := gitIn(t, repo)
 	for _, r := range []string{"origin.git", "up.git"} {
 		if out, err := exec.Command("git", "init", "-q", "--bare", filepath.Join(dir, r)).CombinedOutput(); err != nil {
 			t.Fatalf("%v\n%s", err, out)
@@ -502,14 +473,7 @@ func TestCLIBranchAndOrphan(t *testing.T) {
 		t.Fatalf("build: %v\n%s", err, out)
 	}
 	repo := filepath.Join(dir, "repo")
-	gitIn := func(args ...string) string {
-		t.Helper()
-		out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput()
-		if err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
-		return strings.TrimSpace(string(out))
-	}
+	gitIn := gitIn(t, repo)
 	wt := func(args ...string) (string, error) {
 		cmd := exec.Command(bin, args...)
 		cmd.Dir = repo
@@ -621,14 +585,7 @@ func TestCLIBranchAndOrphan(t *testing.T) {
 func TestPRBehind(t *testing.T) {
 	gitEnv(t)
 	repo := t.TempDir()
-	run := func(args ...string) string {
-		t.Helper()
-		out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput()
-		if err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
-		return strings.TrimSpace(string(out))
-	}
+	run := gitIn(t, repo)
 	run("init", "-q", "-b", "main")
 	run("commit", "-q", "--allow-empty", "-m", "base")
 	base := run("rev-parse", "HEAD")
@@ -831,14 +788,7 @@ func cliRepo(t *testing.T) (repo string, git func(args ...string) string, wt fun
 	if err := os.MkdirAll(repo, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	git = func(args ...string) string {
-		t.Helper()
-		out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput()
-		if err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
-		return strings.TrimSpace(string(out))
-	}
+	git = gitIn(t, repo)
 	wt = func(args ...string) (string, string, error) {
 		cmd := exec.Command(bin, args...)
 		cmd.Dir = repo
@@ -1031,6 +981,19 @@ func TestCLIRenameCaseOnly(t *testing.T) {
 	}
 	if list := git("worktree", "list", "--porcelain"); !strings.Contains(list, "/.wt/foo\n") {
 		t.Errorf("git should know the worktree as foo:\n%s", list)
+	}
+}
+
+// gitIn returns a function that runs git in repo, fails the test when git
+// does, and returns its output.
+func gitIn(t *testing.T, repo string) func(args ...string) string {
+	return func(args ...string) string {
+		t.Helper()
+		out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
 	}
 }
 
@@ -1255,12 +1218,7 @@ func TestPRColumnWidth(t *testing.T) {
 	initStyles()
 	gitEnv(t)
 	repo := t.TempDir()
-	run := func(args ...string) {
-		t.Helper()
-		if out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
-	}
+	run := gitIn(t, repo)
 	run("init", "-q", "-b", "main")
 	run("config", "init.defaultBranch", "main")
 	run("commit", "-q", "--allow-empty", "-m", "init")
