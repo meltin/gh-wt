@@ -19,6 +19,7 @@ It only needs `git` and `gh`. Icons use [Nerd Fonts](https://www.nerdfonts.com/)
 
 - [GitHub CLI](https://cli.github.com/) must be installed and authenticated
 - A [Nerd Font](https://www.nerdfonts.com/) in your terminal
+- macOS or Linux. Windows binaries are published but untested: copying files (`wt.copy*`) calls `cp`, hooks run with `sh`, and the shell function is for zsh, so it needs an environment that has them, such as WSL or Git Bash
 
 ### Install as a GitHub CLI extension
 
