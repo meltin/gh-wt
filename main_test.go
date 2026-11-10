@@ -902,6 +902,32 @@ func TestCLICopyQuotedNames(t *testing.T) {
 	}
 }
 
+// wt.copymodified copies a changed file and passes over a deleted one.
+func TestCLICopyModifiedSkipsDeleted(t *testing.T) {
+	repo, git, wt := cliRepo(t)
+	for _, name := range []string{"changed.txt", "gone.txt"} {
+		if err := os.WriteFile(filepath.Join(repo, name), []byte("old"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	git("add", ".")
+	git("commit", "-q", "-m", "files")
+	git("config", "wt.copymodified", "true")
+	if err := os.WriteFile(filepath.Join(repo, "changed.txt"), []byte("new"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(repo, "gone.txt")); err != nil {
+		t.Fatal(err)
+	}
+	path, stderr, err := wt("copy")
+	if err != nil || strings.Contains(stderr, "warning") {
+		t.Fatalf("create: %v\n%s", err, stderr)
+	}
+	if got, _ := os.ReadFile(filepath.Join(path, "changed.txt")); string(got) != "new" {
+		t.Errorf("changed.txt = %q, want the uncommitted change", got)
+	}
+}
+
 // gitEnv keeps the user's git config out of a test and lets it commit.
 func gitEnv(t *testing.T) {
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)

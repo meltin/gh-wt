@@ -1025,6 +1025,9 @@ func copyFiles(src, dst, base string) {
 			continue
 		}
 		from, to := filepath.Join(src, e), filepath.Join(dst, e)
+		if !exists(from) { // ls-files --modified lists deleted files too
+			continue
+		}
 		if (skipBase && within(from, base)) || samePath(from, base) {
 			continue
 		}
