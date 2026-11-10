@@ -1129,6 +1129,25 @@ func TestLiveTableReceivesLookup(t *testing.T) {
 	t.Fatal("no cmd returned the lookup")
 }
 
+// An open PR's head adds to the commits behind the upstream, as in gh wt -p;
+// a head that isn't fetched shows as unknown.
+func TestLiveTableOpenPRBehind(t *testing.T) {
+	open := &pullRequest{Number: 1, State: "OPEN"}
+	tbl := newLiveTable(0, nil)
+	tbl.rows = []row{{status: status{behind: 5}}, {status: status{behind: 1}}, {}, {status: status{behind: 3}}}
+	tbl.update(prLookup{prs: []prRow{
+		{pr: open, behind: 0, known: true}, // up to date with the PR, 5 behind the upstream
+		{pr: open, behind: 4, known: true},
+		{pr: open}, // head not fetched
+		{pr: &pullRequest{State: "MERGED"}, behind: 9, known: true}, // only open PRs count
+	}})
+	for i, want := range []status{{behind: 5}, {behind: 4}, {remoteNew: true}, {behind: 3}} {
+		if got := tbl.rows[i].status; got != want {
+			t.Errorf("row %d: status = %+v, want %+v", i, got, want)
+		}
+	}
+}
+
 // In a narrow terminal the PRs make the lines wrap; huh must re-measure so no
 // row disappears and the cursor stays on its row.
 func TestPickerNarrowFill(t *testing.T) {

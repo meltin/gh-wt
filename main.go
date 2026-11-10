@@ -1275,9 +1275,8 @@ func (t *liveTable) update(msg tea.Msg) tea.Cmd {
 			}
 			t.rows[i].pr = p.pr
 			if p.pr.State == "OPEN" {
-				if p.known { // the PR head is fresher than the remote-tracking ref
-					t.rows[i].status.behind = p.behind
-				}
+				// As in renderPRTable: the PR head may be fresher than the upstream.
+				t.rows[i].status.behind = max(t.rows[i].status.behind, p.behind)
 				t.rows[i].status.remoteNew = !p.known
 			}
 		}
