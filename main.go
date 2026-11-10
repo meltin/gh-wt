@@ -582,7 +582,8 @@ func selectPR() {
 	if j := slices.IndexFunc(wts, func(wt worktree) bool { return samePath(wt.path, current) }); j >= 0 {
 		here = wts[j]
 	}
-	description, options := prOptions(renderPRTable(prs, wts, here, def, pickerWidth()))
+	names := loadPRNames(def) // def is loaded when a PR needs it
+	description, options := prOptions(renderPRTable(prs, wts, here, names, pickerWidth()))
 	if len(options) == 0 {
 		fail("no other open pull requests")
 	}
@@ -597,20 +598,20 @@ func selectPR() {
 	if err != nil {
 		pickerStopped(err)
 	}
-	checkoutPR(strconv.Itoa(prs[selected].Number), prs[selected], def) // def is loaded when a PR needs it
+	checkoutPR(strconv.Itoa(prs[selected].Number), prs[selected], names)
 }
 
 // renderPRTable lays out PRs with the worktree's CHANGES when one exists, so
 // it's clear whether selecting moves to it or creates it. When no PR is on the
 // current worktree here's branch, it gets a line of its own after the PRs'.
 // current marks the lines of here's branch.
-func renderPRTable(prs []pullRequest, wts []worktree, here worktree, def string, maxWidth int) (header string, lines []string, current []bool) {
+func renderPRTable(prs []pullRequest, wts []worktree, here worktree, names prNames, maxWidth int) (header string, lines []string, current []bool) {
 	const colTitle, colBranch = 2, 3
 	cells := make([][]string, len(prs))
 	current = make([]bool, len(prs))
 	for i, pr := range prs {
 		changes := ""
-		name := prBranch(pr, def)
+		name := names.branch(pr)
 		current[i] = name == here.branch
 		if j := slices.IndexFunc(wts, func(wt worktree) bool { return wt.branch == name }); j >= 0 {
 			s := worktreeStatus(wts[j].path)
@@ -714,13 +715,12 @@ func openPR(arg string) {
 			exitWithStatus(err)
 		}
 	}
-	checkoutPR(arg, pr, def)
+	checkoutPR(arg, pr, loadPRNames(def))
 }
 
-// checkoutPR opens pr, which gh pr checkout knows as arg, in a worktree. def
-// is the repository's default branch, needed for a PR from a fork.
-func checkoutPR(arg string, pr pullRequest, def string) {
-	name := prBranch(pr, def)
+// checkoutPR opens pr, which gh pr checkout knows as arg, in a worktree.
+func checkoutPR(arg string, pr pullRequest, names prNames) {
+	name := names.branch(pr)
 	_, base := repoBase()
 	path, reuse := filepath.Join(base, name), false
 	wts := liveWorktrees()
@@ -749,14 +749,92 @@ func checkoutPR(arg string, pr pullRequest, def string) {
 	setUpWorktree(src, path, base)
 }
 
-// prBranch is the local branch gh pr checkout uses for the PR: its head branch,
-// or <owner>/<branch> for a fork's branch named like the repository's default
-// branch def (as gh gets it from GitHub), so it doesn't collide with ours.
-func prBranch(pr pullRequest, def string) string {
-	if pr.IsCrossRepository && pr.HeadRefName == def {
+// prNames decides the local branch of a PR.
+type prNames struct {
+	def    string           // the repository's default branch on GitHub, needed for a PR from a fork
+	origin string           // origin's "owner/name"
+	local  map[string]pulls // the local branches
+}
+
+// pulls is where a local branch pulls from: the "owner/name" of its remote,
+// empty without one, and the ref there (branch.<name>.merge).
+type pulls struct{ repo, ref string }
+
+func loadPRNames(def string) prNames {
+	return prNames{def: def, origin: originRepo(), local: localBranches()}
+}
+
+// branch is the local branch for the PR: its head branch, as gh pr checkout
+// names it, or <owner>/<branch> for a fork's branch whose name is taken, by
+// the repository's default branch or by a local branch that isn't this PR's.
+// gh would fast-forward that branch to the PR and make it pull from the fork.
+func (n prNames) branch(pr pullRequest) string {
+	if !pr.IsCrossRepository {
+		return pr.HeadRefName
+	}
+	if p, taken := n.local[pr.HeadRefName]; pr.HeadRefName == n.def || (taken && !n.isOf(pr, p)) {
 		return pr.HeadRepositoryOwner.Login + "/" + pr.HeadRefName
 	}
 	return pr.HeadRefName
+}
+
+// isOf reports whether a local branch pulling from p is the fork PR's, going
+// by what gh pr checkout sets up: the branch pulls from the fork, or from
+// refs/pull/<number>/head when the fork can't be pushed to. A branch that
+// pulls from nowhere is the PR's when origin is that fork.
+func (n prNames) isOf(pr pullRequest, p pulls) bool {
+	owner := func(repo string) string {
+		o, _, _ := strings.Cut(repo, "/")
+		return o
+	}
+	switch {
+	case p.ref == fmt.Sprintf("refs/pull/%d/head", pr.Number):
+		return true
+	case p.repo != "":
+		return strings.EqualFold(owner(p.repo), pr.HeadRepositoryOwner.Login)
+	}
+	return n.origin != "" && strings.EqualFold(owner(n.origin), pr.HeadRepositoryOwner.Login)
+}
+
+// localBranches reads the local branches and where each pulls from.
+func localBranches() map[string]pulls {
+	branches := map[string]pulls{}
+	names, _ := git("for-each-ref", "--format=%(refname:short)", "refs/heads/")
+	for _, name := range strings.Fields(names) {
+		branches[name] = pulls{}
+	}
+	out, _ := git("config", "--get-regexp", `^(branch\..*\.(remote|merge)|remote\..*\.url)$`)
+	urls, remotes := map[string]string{}, map[string]string{}
+	for _, line := range strings.Split(out, "\n") {
+		key, value, _ := strings.Cut(line, " ")
+		section, rest, _ := strings.Cut(key, ".")
+		i := strings.LastIndex(rest, ".")
+		if i < 0 {
+			continue
+		}
+		name, variable := rest[:i], rest[i+1:]
+		switch {
+		case section == "remote":
+			urls[name] = value
+		case variable == "remote":
+			remotes[name] = value
+		default:
+			if p, ok := branches[name]; ok {
+				p.ref = value
+				branches[name] = p
+			}
+		}
+	}
+	for name, remote := range remotes { // a remote's name, or a URL as gh sets for a fork
+		if p, ok := branches[name]; ok {
+			if url, named := urls[remote]; named {
+				remote = url
+			}
+			p.repo = repoOf(remote)
+			branches[name] = p
+		}
+	}
+	return branches
 }
 
 // repoDefaultBranch is the repository's default branch on GitHub.
@@ -1800,6 +1878,11 @@ func originRepo() string {
 	if err != nil {
 		return ""
 	}
+	return repoOf(url)
+}
+
+// repoOf is "owner/name" parsed from a repository's URL, or "" if it can't be.
+func repoOf(url string) string {
 	url = strings.TrimSuffix(strings.TrimSuffix(url, "/"), ".git")
 	parts := strings.FieldsFunc(url, func(r rune) bool { return r == '/' || r == ':' })
 	if len(parts) < 2 {
