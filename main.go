@@ -555,7 +555,7 @@ func selectPR() {
 	if j := slices.IndexFunc(wts, func(wt worktree) bool { return samePath(wt.path, current) }); j >= 0 {
 		here = wts[j]
 	}
-	names := loadPRNames(def, baseRepo(prs)) // def is loaded when a PR needs it
+	names := loadPRNames(def, prs) // def is loaded when a PR needs it
 	var selected int
 	cells, currentLines := prCells(prs, wts, here, names)
 	p := newPRPicker(cells, currentLines, pickerWidth(), &selected)
@@ -748,7 +748,7 @@ func openPR(arg string) {
 			exitWithStatus(err)
 		}
 	}
-	checkoutPR(arg, pr, loadPRNames(def, baseRepo([]pullRequest{pr})))
+	checkoutPR(arg, pr, loadPRNames(def, []pullRequest{pr}))
 }
 
 // checkoutPR opens pr, which gh pr checkout knows as arg, in a worktree.
@@ -785,7 +785,7 @@ func checkoutPR(arg string, pr pullRequest, names prNames) {
 // prNames ties PRs to local branches the way gh does.
 type prNames struct {
 	def   string            // the repository's default branch
-	base  string            // "owner/name" of the repository the PRs are in
+	bases []string          // "owner/name" of the repository the PRs are in, under each name it goes by
 	heads map[string]prHead // the local branches
 }
 
@@ -799,23 +799,22 @@ type prHead struct {
 	branch string
 }
 
-func loadPRNames(def, base string) prNames {
-	return prNames{def: def, base: base, heads: localBranches()}
-}
-
-// baseRepo is the "owner/name" of the repository the PRs are in.
-func baseRepo(prs []pullRequest) string {
-	if len(prs) == 0 {
-		return ""
+// loadPRNames reads the local branches. The base repository is known by the
+// name in the PRs' URLs and by the name of the remote gh takes for it, which
+// is an older one when the repository was renamed or moved since the clone.
+func loadPRNames(def string, prs []pullRequest) prNames {
+	heads, bases := localBranches()
+	if len(prs) > 0 {
+		repo, _, _ := strings.Cut(prs[0].URL, "/pull/")
+		bases = append(bases, repoOf(repo))
 	}
-	repo, _, _ := strings.Cut(prs[0].URL, "/pull/")
-	return repoOf(repo)
+	return prNames{def: def, bases: bases, heads: heads}
 }
 
 // owner is what gh qualifies the head with: the owner of the repository the
 // branch pushes to when that isn't the base repository, else nothing.
-func (h prHead) owner(base string) string {
-	if h.repo == "" || strings.EqualFold(h.repo, base) {
+func (h prHead) owner(bases []string) string {
+	if h.repo == "" || slices.ContainsFunc(bases, func(base string) bool { return strings.EqualFold(h.repo, base) }) {
 		return ""
 	}
 	owner, _, _ := strings.Cut(h.repo, "/")
@@ -825,7 +824,7 @@ func (h prHead) owner(base string) string {
 // isOf reports whether pr is the PR of the branch with this head: gh compares
 // the head's label, <owner>:<branch> for a PR from a fork and <branch>
 // otherwise.
-func (h prHead) isOf(pr pullRequest, base string) bool {
+func (h prHead) isOf(pr pullRequest, bases []string) bool {
 	if h.number != 0 {
 		return pr.Number == h.number
 	}
@@ -833,7 +832,7 @@ func (h prHead) isOf(pr pullRequest, base string) bool {
 	if pr.IsCrossRepository {
 		prOwner = pr.HeadRepositoryOwner.Login
 	}
-	return pr.HeadRefName == h.branch && strings.EqualFold(prOwner, h.owner(base))
+	return pr.HeadRefName == h.branch && strings.EqualFold(prOwner, h.owner(bases))
 }
 
 // branch is the local branch for the PR: its head branch, as gh pr checkout
@@ -844,7 +843,7 @@ func (n prNames) branch(pr pullRequest) string {
 	if !pr.IsCrossRepository {
 		return pr.HeadRefName
 	}
-	if h, taken := n.heads[pr.HeadRefName]; pr.HeadRefName == n.def || (taken && !h.isOf(pr, n.base)) {
+	if h, taken := n.heads[pr.HeadRefName]; pr.HeadRefName == n.def || (taken && !h.isOf(pr, n.bases)) {
 		return pr.HeadRepositoryOwner.Login + "/" + pr.HeadRefName
 	}
 	return pr.HeadRefName
@@ -859,14 +858,18 @@ func (n prNames) branch(pr pullRequest) string {
 // checkout sets up a fork's PR, takes the name it merges from. gh-wt opens
 // such a PR as <owner>/<branch> when the name is taken, and gh itself would
 // then look for a head named like the local branch and not find the PR.
-func localBranches() map[string]prHead {
-	heads := map[string]prHead{}
+//
+// bases are the names of the base repository that the remotes give: the one
+// set with gh repo set-default, or the only remote there is, as in gh.
+func localBranches() (heads map[string]prHead, bases []string) {
+	heads = map[string]prHead{}
 	names, _ := git("for-each-ref", "--format=%(refname:short)", "refs/heads/")
 	for _, name := range strings.Fields(names) {
 		heads[name] = prHead{branch: name}
 	}
-	out, _ := git("config", "--get-regexp", `^(branch\..*\.(remote|pushremote|merge)|remote\..*\.url|remote\.pushdefault|push\.default)$`)
+	out, _ := git("config", "--get-regexp", `^(branch\..*\.(remote|pushremote|merge)|remote\..*\.(url|gh-resolved)|remote\.pushdefault|push\.default)$`)
 	urls, remotes, pushRemotes, merges := map[string]string{}, map[string]string{}, map[string]string{}, map[string]string{}
+	resolved := map[string]string{} // remote.<name>.gh-resolved: "base", or the repository gh resolved it to
 	pushDefault, remotePushDefault := "", ""
 	for _, line := range strings.Split(out, "\n") {
 		key, value, _ := strings.Cut(line, " ")
@@ -885,6 +888,8 @@ func localBranches() map[string]prHead {
 		}
 		name, variable := rest[:i], rest[i+1:]
 		switch {
+		case section == "remote" && variable == "gh-resolved":
+			resolved[name] = value
 		case section == "remote":
 			urls[name] = value
 		case variable == "remote":
@@ -905,16 +910,27 @@ func localBranches() map[string]prHead {
 		remote := cmp.Or(pushRemotes[name], remotePushDefault, remotes[name])
 		url, named := urls[remote]
 		if !named {
-			url = remote // a URL, as gh pr checkout sets for a fork
+			url = remote // a URL, as gh pr checkout sets for a fork, or "." for a local branch
 		}
 		h.repo = repoOf(url)
 		merged, tracks := strings.CutPrefix(merges[name], "refs/heads/")
-		if tracks && (pushDefault == "upstream" || pushDefault == "tracking" || (remote != "" && !named)) {
+		if tracks && (pushDefault == "upstream" || pushDefault == "tracking" || (!named && h.repo != "")) {
 			h.branch = merged
 		}
 		heads[name] = h
 	}
-	return heads
+	for name, value := range resolved {
+		if value == "base" {
+			value = urls[name]
+		}
+		bases = append(bases, repoOf(value))
+	}
+	if len(resolved) == 0 && len(urls) == 1 {
+		for _, url := range urls {
+			bases = append(bases, repoOf(url))
+		}
+	}
+	return heads, bases
 }
 
 // repoDefaultBranch is the repository's default branch on GitHub.
@@ -1859,7 +1875,7 @@ func fetchPRs() (map[string]pullRequest, string) {
 		return nil, msg
 	}
 	prs := append(open, r.prs...)
-	return prByBranch(prs, loadPRNames(<-def, baseRepo(prs))), ""
+	return prByBranch(prs, loadPRNames(<-def, prs)), ""
 }
 
 // prByBranch gives each local branch its PR as gh pr view would: of the PRs
@@ -1869,10 +1885,10 @@ func prByBranch(prs []pullRequest, names prNames) map[string]pullRequest {
 	m := make(map[string]pullRequest, len(names.heads))
 	for _, pr := range prs {
 		for branch, h := range names.heads {
-			if !h.isOf(pr, names.base) {
+			if !h.isOf(pr, names.bases) {
 				continue
 			}
-			if pr.State != "OPEN" && names.def != "" && h.number == 0 && h.owner(names.base) == "" && h.branch == names.def {
+			if pr.State != "OPEN" && names.def != "" && h.number == 0 && h.owner(names.bases) == "" && h.branch == names.def {
 				continue
 			}
 			if prev, ok := m[branch]; !ok || (prev.State != "OPEN" && pr.State == "OPEN") {
