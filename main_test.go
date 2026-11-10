@@ -94,23 +94,30 @@ func TestParseStatusWithoutUpstream(t *testing.T) {
 	}
 }
 
-// One PR per branch: the newest, but an open one wins, and a stranger's fork
-// branch of the same name doesn't count.
+// A local branch gets its PR the way gh pr view finds it: by the repository
+// the branch pushes to and its name there, an open PR before a newer closed one.
 func TestPRByBranch(t *testing.T) {
 	pr := func(number int, state, branch, forkOwner string) pullRequest {
 		p := pullRequest{Number: number, State: state, HeadRefName: branch, IsCrossRepository: forkOwner != ""}
 		p.HeadRepositoryOwner.Login = forkOwner
 		return p
 	}
-	names := prNames{origin: "me/proj", local: map[string]pulls{
-		"feat":          {repo: "me/proj", ref: "refs/heads/feat"},        // ours
-		"done":          {repo: "me/proj", ref: "refs/heads/done"},        // ours
-		"review":        {repo: "someone/proj", ref: "refs/heads/review"}, // a fork's PR, opened with gh wt -p
-		"someone/taken": {repo: "someone/proj", ref: "refs/heads/taken"},  // ... whose name was taken
-		"taken":         {repo: "me/proj", ref: "refs/heads/taken"},       // ours
-		"readonly":      {repo: "me/proj", ref: "refs/pull/2/head"},       // a fork that can't be pushed to
+	names := prNames{def: "main", base: "up/proj", heads: map[string]prHead{
+		"main":          {repo: "up/proj", branch: "main"},
+		"feat":          {repo: "up/proj", branch: "feat"},        // pushes to the repository itself
+		"done":          {repo: "Up/Proj", branch: "done"},        // ... whatever the case of its URL
+		"local":         {branch: "local"},                        // no remote: the repository itself, as gh assumes
+		"develop":       {repo: "me/proj", branch: "develop"},     // pushes to our fork
+		"review":        {repo: "someone/proj", branch: "review"}, // a fork's PR opened with gh pr checkout
+		"someone/taken": {repo: "someone/proj", branch: "taken"},  // ... under another local name
+		"taken":         {repo: "up/proj", branch: "taken"},
+		"readonly":      {number: 2}, // refs/pull/2/head
 	}}
 	got := prByBranch([]pullRequest{ // newest first, as gh lists them
+		pr(20, "MERGED", "main", ""),  // the default branch only counts an open PR
+		pr(15, "OPEN", "develop", ""), // the repository's own develop, not our fork's
+		pr(14, "OPEN", "develop", "me"),
+		pr(13, "OPEN", "local", ""),
 		pr(12, "OPEN", "taken", "someone"),
 		pr(11, "OPEN", "review", "someone"),
 		pr(10, "OPEN", "review", "other"), // another fork's branch of that name
@@ -121,9 +128,9 @@ func TestPRByBranch(t *testing.T) {
 		pr(5, "MERGED", "done", ""),
 		pr(4, "CLOSED", "done", ""),
 		pr(3, "OPEN", "unknown", "someone"), // no local branch
-		pr(2, "OPEN", "readonly", "someone"),
+		pr(2, "OPEN", "whatever", "someone"),
 	}, names)
-	want := map[string]int{"feat": 7, "done": 5, "review": 11, "someone/taken": 12, "readonly": 2}
+	want := map[string]int{"feat": 7, "done": 5, "local": 13, "develop": 14, "review": 11, "someone/taken": 12, "readonly": 2}
 	for branch, number := range want {
 		if got[branch].Number != number {
 			t.Errorf("%s: PR #%d, want #%d", branch, got[branch].Number, number)
@@ -140,15 +147,22 @@ func TestFetchPRsFindsOldOpenPR(t *testing.T) {
 	stub := t.TempDir()
 	script := `#!/bin/sh
 case "$*" in
-*"--state all"*) echo '[{"number":9,"state":"MERGED","headRefName":"done"},{"number":8,"state":"CLOSED","headRefName":"retried"}]' ;;
-*) echo '[{"number":7,"state":"OPEN","headRefName":"retried"},{"number":3,"state":"OPEN","headRefName":"long-lived"}]' ;;
+*"--state all"*) echo '[{"number":9,"state":"MERGED","headRefName":"done","url":"https://github.com/up/proj/pull/9"},{"number":8,"state":"CLOSED","headRefName":"retried","url":"https://github.com/up/proj/pull/8"}]' ;;
+*) echo '[{"number":7,"state":"OPEN","headRefName":"retried","url":"https://github.com/up/proj/pull/7"},{"number":3,"state":"OPEN","headRefName":"long-lived","url":"https://github.com/up/proj/pull/3"}]' ;;
 esac
 `
 	if err := os.WriteFile(filepath.Join(stub, "gh"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", stub+string(os.PathListSeparator)+os.Getenv("PATH"))
-	t.Chdir(t.TempDir()) // no origin: same-repository PRs all count
+	repo := t.TempDir()
+	run := gitIn(t, repo)
+	run("init", "-q", "-b", "main")
+	run("commit", "-q", "--allow-empty", "-m", "init")
+	for _, b := range []string{"long-lived", "retried", "done"} {
+		run("branch", b)
+	}
+	t.Chdir(repo)
 
 	prs, msg := fetchPRs()
 	if msg != "" {
@@ -698,21 +712,21 @@ func TestPRBehind(t *testing.T) {
 	}
 }
 
-func TestOriginRepo(t *testing.T) {
-	gitEnv(t)
-	repo := t.TempDir()
-	if out, err := exec.Command("git", "-C", repo, "init", "-q").CombinedOutput(); err != nil {
-		t.Fatalf("%v\n%s", err, out)
+func TestRepoOf(t *testing.T) {
+	for url, want := range map[string]string{
+		"git@github.com:me/fork.git":        "me/fork",
+		"https://github.com/me/fork.git":    "me/fork",
+		"https://github.com/me/fork":        "me/fork",
+		"ssh://git@github.com/me/fork":      "me/fork",
+		"https://github.com/up/proj/pull/7": "pull/7", // callers cut the URL of a PR first
+		"":                                  "",
+	} {
+		if got := repoOf(url); got != want {
+			t.Errorf("repoOf(%q) = %q, want %q", url, got, want)
+		}
 	}
-	t.Chdir(repo)
-	for _, url := range []string{"git@github.com:me/fork.git", "https://github.com/me/fork.git", "ssh://git@github.com/me/fork"} {
-		_ = exec.Command("git", "remote", "remove", "origin").Run()
-		if out, err := exec.Command("git", "remote", "add", "origin", url).CombinedOutput(); err != nil {
-			t.Fatalf("%v\n%s", err, out)
-		}
-		if got := originRepo(); got != "me/fork" {
-			t.Errorf("originRepo(%s) = %q", url, got)
-		}
+	if got := baseRepo([]pullRequest{{URL: "https://github.com/up/proj/pull/7"}}); got != "up/proj" {
+		t.Errorf("baseRepo = %q", got)
 	}
 }
 
@@ -754,12 +768,12 @@ func TestPRBranch(t *testing.T) {
 		p.HeadRepositoryOwner.Login = "someone"
 		return p
 	}
-	names := prNames{def: "main", origin: "me/proj", local: map[string]pulls{
-		"mine":     {repo: "me/proj", ref: "refs/heads/mine"},        // our own branch, pushed
-		"unpushed": {},                                               // our own branch, no upstream
-		"theirs":   {repo: "Someone/proj", ref: "refs/heads/theirs"}, // gh pr checkout of a fork that can be pushed to
-		"readonly": {repo: "me/proj", ref: "refs/pull/7/head"},       // ... and of one that can't
-		"other-pr": {repo: "me/proj", ref: "refs/pull/8/head"},
+	names := prNames{def: "main", base: "up/proj", heads: map[string]prHead{
+		"mine":     {repo: "up/proj", branch: "mine"},        // our own branch, pushed
+		"unpushed": {branch: "unpushed"},                     // our own branch, no remote
+		"theirs":   {repo: "Someone/proj", branch: "theirs"}, // gh pr checkout of a fork that can be pushed to
+		"readonly": {number: 7},                              // ... and of one that can't
+		"other-pr": {number: 8},
 	}}
 	for _, c := range []struct {
 		pr   pullRequest
@@ -780,14 +794,9 @@ func TestPRBranch(t *testing.T) {
 			t.Errorf("branch(%s, fork %v) = %q, want %q", c.pr.HeadRefName, c.pr.IsCrossRepository, got, c.want)
 		}
 	}
-	// In a clone of the fork itself, a branch without an upstream is the PR's.
-	names.origin = "someone/proj"
-	if got := names.branch(pr("unpushed", true)); got != "unpushed" {
-		t.Errorf("from the fork's own clone: %q", got)
-	}
 }
 
-// localBranches reads what gh pr checkout writes for a PR from a fork.
+// localBranches works out each branch's PR head by gh's rules.
 func TestLocalBranches(t *testing.T) {
 	gitEnv(t)
 	repo := t.TempDir()
@@ -795,33 +804,55 @@ func TestLocalBranches(t *testing.T) {
 	run("init", "-q", "-b", "main")
 	run("commit", "-q", "--allow-empty", "-m", "init")
 	run("remote", "add", "origin", "git@github.com:me/proj.git")
-	for _, b := range []string{"mine", "theirs", "readonly", "feat/plain"} {
+	run("remote", "add", "upstream", "https://github.com/up/proj.git")
+	for _, b := range []string{"mine", "tracks-main", "to-upstream", "theirs", "someone/taken", "readonly", "feat/plain"} {
 		run("branch", b)
 	}
-	run("config", "branch.mine.remote", "origin")
-	run("config", "branch.mine.merge", "refs/heads/mine")
-	run("config", "branch.theirs.remote", "git@github.com:someone/proj.git")
-	run("config", "branch.theirs.pushRemote", "git@github.com:someone/proj.git")
-	run("config", "branch.theirs.merge", "refs/heads/theirs")
-	run("config", "branch.readonly.remote", "origin")
-	run("config", "branch.readonly.merge", "refs/pull/7/head")
-	t.Chdir(repo)
-	want := map[string]pulls{
-		"main":       {},
-		"mine":       {repo: "me/proj", ref: "refs/heads/mine"},
-		"theirs":     {repo: "someone/proj", ref: "refs/heads/theirs"},
-		"readonly":   {repo: "me/proj", ref: "refs/pull/7/head"},
-		"feat/plain": {},
-	}
-	got := localBranches()
-	if len(got) != len(want) {
-		t.Errorf("got %d branches: %v", len(got), got)
-	}
-	for name, w := range want {
-		if got[name] != w {
-			t.Errorf("%s: %+v, want %+v", name, got[name], w)
+	config := func(branch string, pairs ...string) {
+		for i := 0; i < len(pairs); i += 2 {
+			run("config", "branch."+branch+"."+pairs[i], pairs[i+1])
 		}
 	}
+	config("mine", "remote", "origin", "merge", "refs/heads/mine")
+	config("tracks-main", "remote", "upstream", "merge", "refs/heads/main") // git switch -c tracks-main upstream/main
+	config("to-upstream", "remote", "origin", "pushRemote", "upstream", "merge", "refs/heads/to-upstream")
+	// As gh pr checkout writes them for a fork's PR:
+	config("theirs", "remote", "git@github.com:someone/proj.git", "pushRemote", "git@github.com:someone/proj.git", "merge", "refs/heads/theirs")
+	config("someone/taken", "remote", "git@github.com:someone/proj.git", "pushRemote", "git@github.com:someone/proj.git", "merge", "refs/heads/taken")
+	config("readonly", "remote", "upstream", "merge", "refs/pull/7/head")
+	t.Chdir(repo)
+	check := func(want map[string]prHead) {
+		t.Helper()
+		got := localBranches()
+		if len(got) != len(want) {
+			t.Errorf("got %d branches: %v", len(got), got)
+		}
+		for name, w := range want {
+			if got[name] != w {
+				t.Errorf("%s: %+v, want %+v", name, got[name], w)
+			}
+		}
+	}
+	want := map[string]prHead{
+		"main":          {branch: "main"},
+		"mine":          {repo: "me/proj", branch: "mine"},
+		"tracks-main":   {repo: "up/proj", branch: "tracks-main"}, // the name it pushes as, not what it merges
+		"to-upstream":   {repo: "up/proj", branch: "to-upstream"}, // pushRemote before remote
+		"theirs":        {repo: "someone/proj", branch: "theirs"},
+		"someone/taken": {repo: "someone/proj", branch: "taken"},
+		"readonly":      {number: 7, branch: "readonly"},
+		"feat/plain":    {branch: "feat/plain"},
+	}
+	check(want)
+
+	// remote.pushDefault comes before branch.<name>.remote, and push.default
+	// upstream pushes to the branch that is merged from.
+	run("config", "remote.pushDefault", "origin")
+	run("config", "push.default", "upstream")
+	want["main"] = prHead{repo: "me/proj", branch: "main"}
+	want["feat/plain"] = prHead{repo: "me/proj", branch: "feat/plain"}
+	want["tracks-main"] = prHead{repo: "me/proj", branch: "main"}
+	check(want)
 }
 
 func TestRenderPRTableFits(t *testing.T) {
