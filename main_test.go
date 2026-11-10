@@ -975,6 +975,25 @@ func TestCLIHookSpanningLines(t *testing.T) {
 	}
 }
 
+// A gh that fails without a word is still a failure, not "no pull requests".
+func TestCLISilentGhFailure(t *testing.T) {
+	_, _, wt := cliRepo(t)
+	stub := t.TempDir()
+	if err := os.WriteFile(filepath.Join(stub, "gh"), []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", stub+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	_, stderr, err := wt("-p")
+	if err == nil || strings.Contains(stderr, "no open pull requests") || !strings.Contains(stderr, "exit status 1") {
+		t.Errorf("-p: %v\n%s", err, stderr)
+	}
+	out, stderr, err := wt("-l")
+	if err != nil || !strings.Contains(out, "main") || !strings.Contains(stderr, "PR state unavailable") {
+		t.Errorf("-l: %v\n%s\n%s", err, out, stderr)
+	}
+}
+
 // gitEnv keeps the user's git config out of a test and lets it commit.
 func gitEnv(t *testing.T) {
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)

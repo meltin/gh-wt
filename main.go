@@ -625,12 +625,21 @@ func currentLine(line string) string {
 
 // openPRs returns the repository's open PRs, including ones from forks.
 func openPRs() ([]pullRequest, string) {
-	cmd := exec.Command("gh", "pr", "list", "--limit", "100", "--json", "number,title,headRefName,headRefOid,headRepositoryOwner,isDraft,isCrossRepository,author,updatedAt")
+	return ghPRs("--limit", "100", "--json", "number,title,headRefName,headRefOid,headRepositoryOwner,isDraft,isCrossRepository,author,updatedAt")
+}
+
+// ghPRs runs gh pr list with args. The error is what gh said, or how it failed
+// when it said nothing, so a failure never looks like an empty list.
+func ghPRs(args ...string) ([]pullRequest, string) {
+	cmd := exec.Command("gh", append([]string{"pr", "list"}, args...)...)
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {
-		return nil, strings.TrimSpace(stderr.String())
+		if msg := strings.TrimSpace(stderr.String()); msg != "" {
+			return nil, msg
+		}
+		return nil, "gh pr list: " + err.Error()
 	}
 	var prs []pullRequest
 	if err := json.Unmarshal(out, &prs); err != nil {
@@ -1595,16 +1604,9 @@ func parseStatus(out string) status {
 
 // fetchPRs returns the newest PR per head branch, or gh's error message.
 func fetchPRs() (map[string]pullRequest, string) {
-	cmd := exec.Command("gh", "pr", "list", "--state", "all", "--limit", "200", "--json", "headRefName,headRefOid,headRepository,isCrossRepository,number,state,isDraft")
-	var stderr strings.Builder
-	cmd.Stderr = &stderr
-	out, err := cmd.Output()
-	if err != nil {
-		return nil, strings.TrimSpace(stderr.String())
-	}
-	var prs []pullRequest
-	if err := json.Unmarshal(out, &prs); err != nil {
-		return nil, err.Error()
+	prs, msg := ghPRs("--state", "all", "--limit", "200", "--json", "headRefName,headRefOid,headRepository,isCrossRepository,number,state,isDraft")
+	if msg != "" {
+		return nil, msg
 	}
 	origin := originRepo()
 	m := make(map[string]pullRequest, len(prs))
