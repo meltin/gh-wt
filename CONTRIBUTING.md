@@ -10,7 +10,7 @@ gh extension install .   # `gh wt` now runs your local build
 Before committing, make sure these pass:
 
 ```bash
-gofmt -l .
+gofmt -l .          # must print nothing
 go vet ./...
 go test ./...
 staticcheck ./...   # go install honnef.co/go/tools/cmd/staticcheck@latest

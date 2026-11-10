@@ -89,9 +89,9 @@ gh wt only prints the path. To cd into it, add this to your .zshrc:
 
 | Column      | Content                                                                                   |
 | ----------- | ----------------------------------------------------------------------------------------- |
-| BRANCH      | Branch name (up to 28 cells), or `(detached)`                                             |
+| BRANCH      | Branch name (up to 26 cells), or `(detached)`                                             |
 | CHANGES     | `↑` ahead / `↓` behind upstream, `!` conflicts, `+` staged, `~` modified, `?` untracked     |
-| PR          | Number and state (open / draft / merged / closed) of the newest PR for the branch          |
+| PR          | Number and state (open / draft / merged / closed) of the branch's open PR, else its newest |
 | LAST COMMIT | Subject and relative time                                                                 |
 | PATH        | Worktree path, `~` for home                                                               |
 
