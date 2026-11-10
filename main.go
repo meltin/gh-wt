@@ -389,7 +389,12 @@ func repoBase() (mainRoot, base string) {
 	if err != nil {
 		exitWithStatus(err)
 	}
-	mainRoot = mainWorktree(commonDir)
+	// The main repository is the parent of the shared .git, even from a linked
+	// worktree; a bare repository is the common dir itself (as in git-wt).
+	mainRoot = commonDir
+	if filepath.Base(commonDir) == ".git" {
+		mainRoot = filepath.Dir(commonDir)
+	}
 	baseCfg, _ := git("config", "--get", "wt.basedir")
 	home, _ := os.UserHomeDir()
 	base = expandBaseDir(baseCfg, mainRoot, home)
@@ -398,23 +403,6 @@ func repoBase() (mainRoot, base string) {
 		base = real
 	}
 	return mainRoot, base
-}
-
-// mainWorktree is the main repository for its git directory, even from a
-// linked worktree: the parent of a ".git", the directory core.worktree names
-// (a submodule's git directory is inside the superproject's), and for a bare
-// repository the directory itself (as in git-wt).
-func mainWorktree(gitDir string) string {
-	if dir, _ := git("config", "--file", filepath.Join(gitDir, "config"), "--get", "core.worktree"); dir != "" {
-		if !filepath.IsAbs(dir) {
-			dir = filepath.Join(gitDir, dir) // relative to the git directory
-		}
-		return filepath.Clean(dir)
-	}
-	if filepath.Base(gitDir) == ".git" {
-		return filepath.Dir(gitDir)
-	}
-	return gitDir
 }
 
 // findWorktree matches name as a branch, then a directory under base, then a
@@ -1852,12 +1840,7 @@ func mustWorktrees() []worktree {
 	if err != nil {
 		exitWithStatus(err)
 	}
-	wts := parseWorktrees(string(out))
-	// In a submodule git lists the main worktree by its git directory.
-	if len(wts) > 0 && !wts[0].prunable && !exists(filepath.Join(wts[0].path, ".git")) {
-		wts[0].path = mainWorktree(wts[0].path)
-	}
-	return wts
+	return parseWorktrees(string(out))
 }
 
 // parseWorktrees parses `git worktree list --porcelain`, skipping the bare entry.

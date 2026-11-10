@@ -900,67 +900,28 @@ func TestCurrentWorktreeIsUnderHeader(t *testing.T) {
 // the repository; wt runs gh-wt there and returns its stdout and stderr.
 func cliRepo(t *testing.T) (repo string, git func(args ...string) string, wt func(args ...string) (string, string, error)) {
 	t.Helper()
-	dir, cli := buildCLI(t)
+	gitEnv(t)
+	dir, _ := filepath.EvalSymlinks(t.TempDir())
+	bin := filepath.Join(dir, "gh-wt")
+	if out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
+		t.Fatalf("build: %v\n%s", err, out)
+	}
 	repo = filepath.Join(dir, "repo")
 	if err := os.MkdirAll(repo, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	git = gitIn(t, repo)
-	git("init", "-q", "-b", "main")
-	git("commit", "-q", "--allow-empty", "-m", "init")
-	return repo, git, func(args ...string) (string, string, error) { return cli(repo, args...) }
-}
-
-// buildCLI builds gh-wt in a new directory, which it returns with a function
-// that runs gh-wt in a directory and returns its stdout and stderr.
-func buildCLI(t *testing.T) (dir string, cli func(in string, args ...string) (string, string, error)) {
-	t.Helper()
-	gitEnv(t)
-	dir, _ = filepath.EvalSymlinks(t.TempDir())
-	bin := filepath.Join(dir, "gh-wt")
-	if out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
-		t.Fatalf("build: %v\n%s", err, out)
-	}
-	return dir, func(in string, args ...string) (string, string, error) {
+	wt = func(args ...string) (string, string, error) {
 		cmd := exec.Command(bin, args...)
-		cmd.Dir = in
+		cmd.Dir = repo
 		var stderr strings.Builder
 		cmd.Stderr = &stderr
 		out, err := cmd.Output()
 		return strings.TrimSpace(string(out)), stderr.String(), err
 	}
-}
-
-// In a submodule the worktrees go under the submodule's directory, not into
-// the superproject's .git, where the submodule's git directory is.
-func TestCLISubmodule(t *testing.T) {
-	dir, cli := buildCLI(t)
-	for _, name := range []string{"lib", "super"} {
-		repo := filepath.Join(dir, name)
-		if err := os.MkdirAll(repo, 0o755); err != nil {
-			t.Fatal(err)
-		}
-		git := gitIn(t, repo)
-		git("init", "-q", "-b", "main")
-		git("commit", "-q", "--allow-empty", "-m", "init")
-	}
-	gitIn(t, filepath.Join(dir, "super"))("-c", "protocol.file.allow=always", "submodule", "add", "-q", "../lib", "sub")
-	sub := filepath.Join(dir, "super/sub")
-
-	path, stderr, err := cli(sub, "x")
-	if want := filepath.Join(sub, ".wt/x"); err != nil || path != want {
-		t.Fatalf("create: %q, want %q: %v\n%s", path, want, err, stderr)
-	}
-	if got, _, _ := cli(path, "main"); got != sub {
-		t.Errorf("gh wt main from the worktree = %q, want %q", got, sub)
-	}
-	// Deleting the current worktree sends the shell back to the submodule.
-	if got, stderr, err := cli(path, "-d", "x"); err != nil || got != sub {
-		t.Errorf("-d x = %q, want %q: %v\n%s", got, sub, err, stderr)
-	}
-	if _, stderr, err := cli(sub, "-m", "main", "other"); err == nil || !strings.Contains(stderr, "main working tree") {
-		t.Errorf("renaming the main working tree should be refused: %v\n%s", err, stderr)
-	}
+	git("init", "-q", "-b", "main")
+	git("commit", "-q", "--allow-empty", "-m", "init")
+	return repo, git, wt
 }
 
 // A worktree inside another one would be deleted along with it.
