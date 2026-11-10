@@ -1073,14 +1073,14 @@ func TestCLIBranchFlagNeedsNewWorktree(t *testing.T) {
 	if path, stderr, err := wt("-b", "me/feat", "feat"); err != nil || path != filepath.Join(repo, ".wt/feat") {
 		t.Errorf("-b me/feat feat again: %q, %v\n%s", path, err, stderr)
 	}
-	for _, args := range [][]string{
-		{"-b", "fix/2", "feat"}, // the directory of another branch's worktree
-		{"-b", "new", "main"},   // main is the branch of the main worktree
-	} {
-		out, stderr, err := wt(args...)
-		if err == nil || out != "" || !strings.Contains(stderr, "already exists") {
-			t.Errorf("%v: %q, %v\n%s", args, out, err, stderr)
-		}
+	// The directory of another branch's worktree.
+	if out, stderr, err := wt("-b", "fix/2", "feat"); err == nil || out != "" || !strings.Contains(stderr, "already exists") {
+		t.Errorf("-b fix/2 feat: %q, %v\n%s", out, err, stderr)
+	}
+	// With -b the directory is not a branch name: me/feat is a branch with a
+	// worktree elsewhere, and the directory me/feat is still free.
+	if path, stderr, err := wt("-b", "other", "me/feat"); err != nil || path != filepath.Join(repo, ".wt/me/feat") {
+		t.Errorf("-b other me/feat: %q, %v\n%s", path, err, stderr)
 	}
 	// ".." and "." are the main worktree, so they are refused as existing.
 	for dir, want := range map[string]string{"../outside": "not inside wt.basedir", "..": "already exists", ".": "already exists"} {
@@ -1092,8 +1092,8 @@ func TestCLIBranchFlagNeedsNewWorktree(t *testing.T) {
 	if exists(filepath.Join(repo, "outside")) {
 		t.Error("a worktree was created outside wt.basedir")
 	}
-	if branches := git("branch", "--format=%(refname:short)"); branches != "main\nme/feat" {
-		t.Errorf("branches = %q, want none created", branches)
+	if branches := git("branch", "--format=%(refname:short)"); branches != "main\nme/feat\nother" {
+		t.Errorf("branches = %q, want only other created", branches)
 	}
 }
 
