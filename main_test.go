@@ -1148,6 +1148,23 @@ func TestLiveTableOpenPRBehind(t *testing.T) {
 	}
 }
 
+// Narrowing the terminal shortens the columns again instead of wrapping lines.
+func TestPickerFitsAfterResize(t *testing.T) {
+	initStyles()
+	rows, _ := pickerRows()
+	for i := range rows {
+		rows[i].subject = strings.Repeat("a long subject ", 5)
+	}
+	var selected string
+	p := newPicker(rows, 200, 0, make(chan prLookup), &selected)
+	p.Update(tea.WindowSizeMsg{Width: 60, Height: 30})
+	for _, o := range p.options {
+		if w := ansi.StringWidth(o.Key); w > 60-pickerMargin {
+			t.Errorf("line is %d cells wide in a 60-cell terminal: %q", w, ansi.Strip(o.Key))
+		}
+	}
+}
+
 // In a narrow terminal the PRs make the lines wrap; huh must re-measure so no
 // row disappears and the cursor stays on its row.
 func TestPickerNarrowFill(t *testing.T) {
