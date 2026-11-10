@@ -77,6 +77,50 @@ func TestUnknownStatus(t *testing.T) {
 	}
 }
 
+// Headers git prints without an upstream, on a first commit or detached leave
+// ahead and behind at 0; only entry lines count.
+func TestParseStatusWithoutUpstream(t *testing.T) {
+	for name, out := range map[string]string{
+		"no upstream":  "# branch.oid 1111\n# branch.head feat/x\n? new.go",
+		"first commit": "# branch.oid (initial)\n# branch.head main\n? new.go",
+		"detached":     "# branch.oid 1111\n# branch.head (detached)\n? new.go",
+	} {
+		if got, want := parseStatus(out), (status{untracked: 1}); got != want {
+			t.Errorf("%s: got %+v, want %+v", name, got, want)
+		}
+	}
+	if got := parseStatus(""); got != (status{}) {
+		t.Errorf("clean: got %+v", got)
+	}
+}
+
+// One PR per branch: the newest, but an open one wins, and a stranger's fork
+// branch of the same name doesn't count.
+func TestPRByBranch(t *testing.T) {
+	pr := func(number int, state, branch, fork string) pullRequest {
+		p := pullRequest{Number: number, State: state, HeadRefName: branch, IsCrossRepository: fork != ""}
+		p.HeadRepository.NameWithOwner = fork
+		return p
+	}
+	got := prByBranch([]pullRequest{ // newest first, as gh lists them
+		pr(9, "OPEN", "feat", "someone/proj"),
+		pr(8, "CLOSED", "feat", ""),
+		pr(7, "OPEN", "feat", ""),
+		pr(6, "OPEN", "feat", ""),
+		pr(5, "MERGED", "done", ""),
+		pr(4, "CLOSED", "done", ""),
+		pr(3, "OPEN", "mine", "me/proj"),
+	}, "me/proj")
+	for branch, want := range map[string]int{"feat": 7, "done": 5, "mine": 3} {
+		if got[branch].Number != want {
+			t.Errorf("%s: PR #%d, want #%d", branch, got[branch].Number, want)
+		}
+	}
+	if len(got) != 3 {
+		t.Errorf("got %d branches, want 3", len(got))
+	}
+}
+
 func TestRenderTableFits(t *testing.T) {
 	initStyles()
 	rows := []row{{
@@ -615,7 +659,7 @@ func TestPRBehind(t *testing.T) {
 }
 
 func TestOriginRepoAndInOrigin(t *testing.T) {
-	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	gitEnv(t)
 	repo := t.TempDir()
 	if out, err := exec.Command("git", "-C", repo, "init", "-q").CombinedOutput(); err != nil {
 		t.Fatalf("%v\n%s", err, out)
@@ -997,8 +1041,16 @@ func gitIn(t *testing.T, repo string) func(args ...string) string {
 	}
 }
 
-// gitEnv keeps the user's git config out of a test and lets it commit.
+// gitEnv keeps the user's and the system's git config out of a test, and the
+// repository of a git hook the tests may run from, and lets it commit.
 func gitEnv(t *testing.T) {
+	for _, key := range []string{"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"} {
+		if value, ok := os.LookupEnv(key); ok {
+			os.Unsetenv(key)
+			t.Cleanup(func() { os.Setenv(key, value) })
+		}
+	}
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	t.Setenv("GIT_AUTHOR_NAME", "t")
 	t.Setenv("GIT_AUTHOR_EMAIL", "t@t")
@@ -1074,13 +1126,13 @@ func TestPickerHoldsPRsWhileFiltering(t *testing.T) {
 		p.Update(key(k))
 	}
 	p.Update(l)
-	if v := ansi.Strip(p.View()); strings.Contains(v, "#10") {
-		t.Fatalf("PRs shown while typing a filter:\n%s", v)
+	if v := ansi.Strip(p.View()); !p.held || strings.Contains(v, "#10") {
+		t.Fatalf("PRs shown while typing a filter (held = %v):\n%s", p.held, v)
 	}
 	p.Update(key("esc")) // keep the filter, leave typing
 	p.Update(refreshMsg{})
-	if v := ansi.Strip(p.View()); strings.Contains(v, "#10") {
-		t.Fatalf("PRs shown under a filter:\n%s", v)
+	if v := ansi.Strip(p.View()); !p.held || strings.Contains(v, "#10") {
+		t.Fatalf("PRs shown under a filter (held = %v):\n%s", p.held, v)
 	}
 	_, cmd := p.Update(key("esc")) // clear the filter
 	if cmd == nil {
@@ -1241,10 +1293,20 @@ func TestNoShiftWhenPRsArrive(t *testing.T) {
 	tbl := newLiveTable(160, nil)
 	tbl.rows = rows
 	tbl.prWidth = ansi.StringWidth(prCell(&pullRequest{Number: 103, State: "MERGED"}))
-	before, _ := tbl.render()
+	before, linesBefore := tbl.render()
 	tbl.update(l)
-	after, _ := tbl.render()
+	after, linesAfter := tbl.render()
 	if ansi.Strip(before) != ansi.Strip(after) {
 		t.Errorf("header moved:\n%q\n%q", ansi.Strip(before), ansi.Strip(after))
+	}
+	// The cells after the PR column stay where they were.
+	pathAt := func(line, path string) int {
+		line = ansi.Strip(line)
+		return ansi.StringWidth(line[:strings.LastIndex(line, path)])
+	}
+	for i, r := range rows {
+		if b, a := pathAt(linesBefore[i], r.wt.path), pathAt(linesAfter[i], r.wt.path); b != a {
+			t.Errorf("row %d: PATH moved from cell %d to %d", i, b, a)
+		}
 	}
 }
