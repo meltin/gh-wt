@@ -583,19 +583,14 @@ func selectPR() {
 		here = wts[j]
 	}
 	names := loadPRNames(def) // def is loaded when a PR needs it
-	description, options := prOptions(renderPRTable(prs, wts, here, names, pickerWidth()))
-	if len(options) == 0 {
+	var selected int
+	cells, currentLines := prCells(prs, wts, here, names)
+	p := newPRPicker(cells, currentLines, pickerWidth(), &selected)
+	if len(p.options) == 0 {
 		fail("no other open pull requests")
 	}
-	var selected int
-	err := huh.NewForm(huh.NewGroup(
-		huh.NewSelect[int]().
-			Title("Select a pull request:").
-			Description(description).
-			Options(options...).
-			Value(&selected),
-	)).WithOutput(os.Stderr).Run()
-	if err != nil {
+	_, err := tea.NewProgram(p, tea.WithOutput(os.Stderr), tea.WithReportFocus()).Run()
+	if err != nil || p.form.State != huh.StateCompleted {
 		pickerStopped(err)
 	}
 	checkoutPR(strconv.Itoa(prs[selected].Number), prs[selected], names)
@@ -606,8 +601,16 @@ func selectPR() {
 // current worktree here's branch, it gets a line of its own after the PRs'.
 // current marks the lines of here's branch.
 func renderPRTable(prs []pullRequest, wts []worktree, here worktree, names prNames, maxWidth int) (header string, lines []string, current []bool) {
-	const colTitle, colBranch = 2, 3
-	cells := make([][]string, len(prs))
+	cells, current := prCells(prs, wts, here, names)
+	header, lines = layoutPRTable(cells, maxWidth)
+	return header, lines, current
+}
+
+// prCells is the PR table before it is laid out for a width, which is the
+// part that reads the worktrees: a line of cells per PR, plus the current
+// worktree's when no PR is on its branch, and which lines are its.
+func prCells(prs []pullRequest, wts []worktree, here worktree, names prNames) (cells [][]string, current []bool) {
+	cells = make([][]string, len(prs))
 	current = make([]bool, len(prs))
 	for i, pr := range prs {
 		changes := ""
@@ -636,11 +639,68 @@ func renderPRTable(prs []pullRequest, wts []worktree, here worktree, names prNam
 		cells = append(cells, []string{statusCell(worktreeStatus(here.path)), "", "", ansi.Truncate(branchCell(here), 28, "…"), "", ""})
 		current = append(current, true)
 	}
-	header, lines = layoutTable([]string{"WORKTREE", "PR", "TITLE", "BRANCH", "AUTHOR", "UPDATED"}, cells, maxWidth, []shrinkStep{
+	return cells, current
+}
+
+// layoutPRTable aligns prCells' lines; with maxWidth > 0 the title and the
+// branch shrink so every line fits.
+func layoutPRTable(cells [][]string, maxWidth int) (header string, lines []string) {
+	const colTitle, colBranch = 2, 3
+	return layoutTable([]string{"WORKTREE", "PR", "TITLE", "BRANCH", "AUTHOR", "UPDATED"}, cells, maxWidth, []shrinkStep{
 		{colTitle, 30}, {colBranch, 20}, {colTitle, 10}, {colBranch, 10},
 	}, nil)
-	return header, lines, current
 }
+
+// prPicker runs the PR select and lays its table out again when the terminal
+// is resized.
+type prPicker struct {
+	form    *huh.Form
+	sel     *huh.Select[int]
+	options []huh.Option[int] // the select's own slice: a new Key shows on its next update
+	cells   [][]string
+	current []bool
+	width   int // the table's width
+	laid    int // the width the select shows, behind width while a filter is in use
+}
+
+func newPRPicker(cells [][]string, current []bool, width int, selected *int) *prPicker {
+	p := &prPicker{cells: cells, current: current, width: width}
+	description, options := prOptions(p.lay())
+	p.options = options
+	p.sel = huh.NewSelect[int]().Title("Select a pull request:").Description(description).Options(p.options...).Value(selected)
+	p.form = huh.NewForm(huh.NewGroup(p.sel))
+	p.form.SubmitCmd, p.form.CancelCmd = tea.Quit, tea.Interrupt
+	return p
+}
+
+// lay lays the table out for the current width.
+func (p *prPicker) lay() (string, []string, []bool) {
+	header, lines := layoutPRTable(p.cells, p.width)
+	p.laid = p.width
+	return header, lines, p.current
+}
+
+func (p *prPicker) Init() tea.Cmd { return p.form.Init() }
+
+func (p *prPicker) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if size, ok := msg.(tea.WindowSizeMsg); ok {
+		p.width = size.Width - pickerMargin
+	}
+	// As in the worktree picker, a filter shows copies of the options, so the
+	// table waits until it is cleared.
+	if p.laid != p.width && !filtering(p.sel) {
+		description, options := prOptions(p.lay())
+		for i := range options {
+			p.options[i].Key = options[i].Key
+		}
+		p.sel.Description(description)
+	}
+	form, cmd := p.form.Update(msg)
+	p.form = form.(*huh.Form)
+	return p, cmd
+}
+
+func (p *prPicker) View() string { return p.form.View() }
 
 // prOptions is the select's description and options: as in the worktree picker,
 // the current lines go under the header, where they can't be selected. An
@@ -1589,7 +1649,7 @@ func (p *picker) refresh() {
 }
 
 // filtering reports whether a filter is being typed or narrows the options.
-func filtering(s *huh.Select[string]) bool {
+func filtering[T comparable](s *huh.Select[T]) bool {
 	if s.GetFiltering() {
 		return true
 	}

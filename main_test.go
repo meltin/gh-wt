@@ -1393,6 +1393,33 @@ func TestLiveTableOpenPRBehind(t *testing.T) {
 	}
 }
 
+// The PR picker shortens its columns too when the terminal gets narrower, and
+// keeps the PRs' indexes as the options' values.
+func TestPRPickerFitsAfterResize(t *testing.T) {
+	initStyles()
+	prs := []pullRequest{
+		{Number: 1, HeadRefName: "here", Title: strings.Repeat("the current one ", 5)},
+		{Number: 2, HeadRefName: "feat/a", Title: strings.Repeat("a long title ", 6)},
+		{Number: 3, HeadRefName: "feat/b", Title: strings.Repeat("another long title ", 4)},
+	}
+	cells, current := prCells(prs, nil, worktree{branch: "here"}, prNames{})
+	var selected int
+	p := newPRPicker(cells, current, 200, &selected)
+	wide := ansi.StringWidth(p.options[0].Key)
+	p.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	if len(p.options) != 2 || p.options[0].Value != 1 || p.options[1].Value != 2 {
+		t.Fatalf("options = %v, want PRs 1 and 2", p.options)
+	}
+	for _, o := range p.options {
+		if w := ansi.StringWidth(o.Key); w > 100-pickerMargin || w >= wide {
+			t.Errorf("line is %d cells wide in a 100-cell terminal (was %d): %q", w, wide, ansi.Strip(o.Key))
+		}
+	}
+	if v := ansi.Strip(p.View()); !strings.Contains(v, iconCurrent) {
+		t.Errorf("the current PR should stay under the header:\n%s", v)
+	}
+}
+
 // Narrowing the terminal shortens the columns again instead of wrapping lines.
 func TestPickerFitsAfterResize(t *testing.T) {
 	initStyles()
