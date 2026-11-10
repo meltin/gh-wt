@@ -855,6 +855,28 @@ func TestCLINoWorktreeInsideAnother(t *testing.T) {
 	}
 }
 
+// -d takes a name as a branch before a directory, also for a branch without a worktree.
+func TestCLIDeleteBranchBeforeDirectory(t *testing.T) {
+	repo, git, wt := cliRepo(t)
+	if _, stderr, err := wt("-b", "me/feat", "feat"); err != nil {
+		t.Fatalf("create: %v\n%s", err, stderr)
+	}
+	git("branch", "feat")
+	if _, stderr, err := wt("-d", "feat"); err != nil {
+		t.Fatalf("-d feat: %v\n%s", err, stderr)
+	}
+	if branches := git("branch", "--format=%(refname:short)"); branches != "main\nme/feat" {
+		t.Errorf("branches = %q, want only feat deleted", branches)
+	}
+	if !exists(filepath.Join(repo, ".wt/feat")) {
+		t.Error("the worktree in the directory feat should be kept")
+	}
+	// With the branch gone, the name is the directory.
+	if _, stderr, err := wt("-d", "feat"); err != nil || exists(filepath.Join(repo, ".wt/feat")) {
+		t.Errorf("-d feat as a directory: %v\n%s", err, stderr)
+	}
+}
+
 // gitEnv keeps the user's git config out of a test and lets it commit.
 func gitEnv(t *testing.T) {
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
