@@ -310,11 +310,20 @@ func selectWorktree() {
 	p := newPicker(rows, width, prWidth, prs, &selected)
 	_, err := tea.NewProgram(p, tea.WithOutput(os.Stderr), tea.WithReportFocus()).Run()
 	if err != nil || p.form.State != huh.StateCompleted {
-		fmt.Fprintln(os.Stderr, grayStyle.Render("Operation cancelled."))
-		os.Exit(1)
+		pickerStopped(err)
 	}
 	p.reportErr()
 	fmt.Println(selected)
+}
+
+// pickerStopped ends a picker that didn't complete: cancelled by the user, or
+// failed with err (no terminal to draw on, for one).
+func pickerStopped(err error) {
+	if err != nil && !errors.Is(err, tea.ErrInterrupted) && !errors.Is(err, huh.ErrUserAborted) {
+		fail(err.Error())
+	}
+	fmt.Fprintln(os.Stderr, grayStyle.Render("Operation cancelled."))
+	os.Exit(1)
 }
 
 // switchTo prints the path of the worktree matching name as a branch, a
@@ -551,8 +560,7 @@ func selectPR() {
 			Value(&selected),
 	)).WithOutput(os.Stderr).Run()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, grayStyle.Render("Operation cancelled."))
-		os.Exit(1)
+		pickerStopped(err)
 	}
 	openPR(strconv.Itoa(prs[selected].Number))
 }
