@@ -61,6 +61,22 @@ u UU N... 100644 100644 100644 100644 aaa bbb ccc conflict.go
 	}
 }
 
+// A worktree git can't read is not shown as clean.
+func TestUnknownStatus(t *testing.T) {
+	initStyles()
+	gitEnv(t)
+	s := worktreeStatus(filepath.Join(t.TempDir(), "missing"))
+	if !s.unknown {
+		t.Fatalf("status = %+v, want unknown", s)
+	}
+	if got := ansi.Strip(statusCell(s)); got != "unknown" {
+		t.Errorf("statusCell = %q", got)
+	}
+	if got := ansi.Strip(statusCell(status{})); got != iconClean {
+		t.Errorf("a clean worktree's cell = %q", got)
+	}
+}
+
 func TestRenderTableFits(t *testing.T) {
 	initStyles()
 	rows := []row{{

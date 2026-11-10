@@ -145,6 +145,7 @@ type pullRequest struct {
 type status struct {
 	ahead, behind, staged, modified, untracked, conflicts int
 	remoteNew                                             bool // the PR has commits not fetched yet
+	unknown                                               bool // git status failed
 }
 
 type row struct {
@@ -1189,11 +1190,11 @@ func localRows(wts []worktree, current string) []row {
 	return rows
 }
 
-// worktreeStatus reads the worktree's git status, empty when git fails.
+// worktreeStatus reads the worktree's git status, unknown when git fails.
 func worktreeStatus(path string) status {
 	out, err := git("--no-optional-locks", "-C", path, "status", "--porcelain=v2", "--branch")
 	if err != nil {
-		return status{}
+		return status{unknown: true}
 	}
 	return parseStatus(out)
 }
@@ -1557,6 +1558,9 @@ func prBehind(path, headOid string) (n int, known bool) {
 }
 
 func statusCell(s status) string {
+	if s.unknown { // not the clean mark: nothing is known about it
+		return grayStyle.Render("unknown")
+	}
 	var parts []string
 	add := func(n int, prefix string, style lipgloss.Style) {
 		if n > 0 {
