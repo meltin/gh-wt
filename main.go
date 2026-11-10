@@ -157,9 +157,10 @@ type row struct {
 
 func main() {
 	args := os.Args[1:]
-	if len(args) == 0 || (len(args) == 1 && (args[0] == "-p" || args[0] == "--pr")) {
-		// stdout is captured by the shell function, so draw pickers on stderr
-		// and let lipgloss detect colors from stderr too.
+	if !(len(args) == 1 && (args[0] == "-l" || args[0] == "--list")) {
+		// Only the list is styled on stdout. Everything else styled (pickers,
+		// warnings) goes to stderr, as stdout is captured by the shell function,
+		// so let lipgloss detect colors from stderr.
 		lipgloss.SetDefaultRenderer(lipgloss.NewRenderer(os.Stderr))
 	}
 	initStyles()
