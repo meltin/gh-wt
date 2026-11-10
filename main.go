@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -132,6 +133,7 @@ type pullRequest struct {
 		Login string `json:"login"`
 	} `json:"headRepositoryOwner"`
 	Title     string    `json:"title"`
+	URL       string    `json:"url"`
 	UpdatedAt time.Time `json:"updatedAt"`
 	Author    struct {
 		Login string `json:"login"`
@@ -553,7 +555,7 @@ func selectPR() {
 	if j := slices.IndexFunc(wts, func(wt worktree) bool { return samePath(wt.path, current) }); j >= 0 {
 		here = wts[j]
 	}
-	names := loadPRNames(def) // def is loaded when a PR needs it
+	names := loadPRNames(def, baseRepo(prs)) // def is loaded when a PR needs it
 	var selected int
 	cells, currentLines := prCells(prs, wts, here, names)
 	p := newPRPicker(cells, currentLines, pickerWidth(), &selected)
@@ -696,7 +698,7 @@ func currentLine(line string) string {
 
 // openPRs returns the repository's open PRs, including ones from forks.
 func openPRs() ([]pullRequest, string) {
-	return ghPRs("--limit", openPRLimit, "--json", "number,title,headRefName,headRefOid,headRepositoryOwner,isDraft,isCrossRepository,author,updatedAt")
+	return ghPRs("--limit", openPRLimit, "--json", "number,title,headRefName,headRefOid,headRepositoryOwner,isDraft,isCrossRepository,author,updatedAt,url")
 }
 
 // openPRLimit is how many open PRs are asked for: more than a repository has,
@@ -730,7 +732,7 @@ func ghPRs(args ...string) ([]pullRequest, string) {
 // copies files and runs wt.hook.
 func openPR(arg string) {
 	arg = strings.TrimPrefix(arg, "#")
-	cmd := exec.Command("gh", "pr", "view", arg, "--json", "number,headRefName,headRepositoryOwner,isCrossRepository")
+	cmd := exec.Command("gh", "pr", "view", arg, "--json", "number,headRefName,headRepositoryOwner,isCrossRepository,url")
 	cmd.Stdin, cmd.Stderr = os.Stdin, os.Stderr
 	out, err := cmd.Output()
 	if err != nil {
@@ -746,7 +748,7 @@ func openPR(arg string) {
 			exitWithStatus(err)
 		}
 	}
-	checkoutPR(arg, pr, loadPRNames(def))
+	checkoutPR(arg, pr, loadPRNames(def, baseRepo([]pullRequest{pr})))
 }
 
 // checkoutPR opens pr, which gh pr checkout knows as arg, in a worktree.
@@ -780,19 +782,58 @@ func checkoutPR(arg string, pr pullRequest, names prNames) {
 	setUpWorktree(src, path, base)
 }
 
-// prNames decides the local branch of a PR.
+// prNames ties PRs to local branches the way gh does.
 type prNames struct {
-	def    string           // the repository's default branch on GitHub, needed for a PR from a fork
-	origin string           // origin's "owner/name"
-	local  map[string]pulls // the local branches
+	def   string            // the repository's default branch
+	base  string            // "owner/name" of the repository the PRs are in
+	heads map[string]prHead // the local branches
 }
 
-// pulls is where a local branch pulls from: the "owner/name" of its remote,
-// empty without one, and the ref there (branch.<name>.merge).
-type pulls struct{ repo, ref string }
+// prHead is the head of a local branch's PR as gh pr view works it out when
+// it is given no PR: the number in a branch.<name>.merge of
+// refs/pull/<number>/head or, without one, the repository the branch pushes to
+// (empty when it has no remote) and the branch's name there.
+type prHead struct {
+	number int
+	repo   string
+	branch string
+}
 
-func loadPRNames(def string) prNames {
-	return prNames{def: def, origin: originRepo(), local: localBranches()}
+func loadPRNames(def, base string) prNames {
+	return prNames{def: def, base: base, heads: localBranches()}
+}
+
+// baseRepo is the "owner/name" of the repository the PRs are in.
+func baseRepo(prs []pullRequest) string {
+	if len(prs) == 0 {
+		return ""
+	}
+	repo, _, _ := strings.Cut(prs[0].URL, "/pull/")
+	return repoOf(repo)
+}
+
+// owner is what gh qualifies the head with: the owner of the repository the
+// branch pushes to when that isn't the base repository, else nothing.
+func (h prHead) owner(base string) string {
+	if h.repo == "" || strings.EqualFold(h.repo, base) {
+		return ""
+	}
+	owner, _, _ := strings.Cut(h.repo, "/")
+	return owner
+}
+
+// isOf reports whether pr is the PR of the branch with this head: gh compares
+// the head's label, <owner>:<branch> for a PR from a fork and <branch>
+// otherwise.
+func (h prHead) isOf(pr pullRequest, base string) bool {
+	if h.number != 0 {
+		return pr.Number == h.number
+	}
+	prOwner := ""
+	if pr.IsCrossRepository {
+		prOwner = pr.HeadRepositoryOwner.Login
+	}
+	return pr.HeadRefName == h.branch && strings.EqualFold(prOwner, h.owner(base))
 }
 
 // branch is the local branch for the PR: its head branch, as gh pr checkout
@@ -803,53 +844,40 @@ func (n prNames) branch(pr pullRequest) string {
 	if !pr.IsCrossRepository {
 		return pr.HeadRefName
 	}
-	if p, taken := n.local[pr.HeadRefName]; pr.HeadRefName == n.def || (taken && !n.isOf(pr, p)) {
+	if h, taken := n.heads[pr.HeadRefName]; pr.HeadRefName == n.def || (taken && !h.isOf(pr, n.base)) {
 		return pr.HeadRepositoryOwner.Login + "/" + pr.HeadRefName
 	}
 	return pr.HeadRefName
 }
 
-// holder is the local branch a PR is shown on. A PR of the repository itself
-// goes by its head branch's name. A fork's PR needs a branch that is the PR's:
-// under its own name or, as branch names it, <owner>/<branch>.
-func (n prNames) holder(pr pullRequest) (string, bool) {
-	if !pr.IsCrossRepository {
-		return pr.HeadRefName, true
-	}
-	name := n.branch(pr)
-	p, exists := n.local[name]
-	return name, exists && n.isOf(pr, p)
-}
-
-// isOf reports whether a local branch pulling from p is the fork PR's, going
-// by what gh pr checkout sets up: the branch pulls from the fork, or from
-// refs/pull/<number>/head when the fork can't be pushed to. A branch that
-// pulls from nowhere is the PR's when origin is that fork.
-func (n prNames) isOf(pr pullRequest, p pulls) bool {
-	owner := func(repo string) string {
-		o, _, _ := strings.Cut(repo, "/")
-		return o
-	}
-	switch {
-	case p.ref == fmt.Sprintf("refs/pull/%d/head", pr.Number):
-		return true
-	case p.repo != "":
-		return strings.EqualFold(owner(p.repo), pr.HeadRepositoryOwner.Login)
-	}
-	return n.origin != "" && strings.EqualFold(owner(n.origin), pr.HeadRepositoryOwner.Login)
-}
-
-// localBranches reads the local branches and where each pulls from.
-func localBranches() map[string]pulls {
-	branches := map[string]pulls{}
+// localBranches reads each local branch's PR head from the git config, by gh's
+// rules: the remote is branch.<name>.pushRemote, else remote.pushDefault, else
+// branch.<name>.remote, and the branch keeps its name unless push.default is
+// upstream (or tracking), which pushes to the branch it merges from.
+//
+// One case goes beyond gh: a branch that pushes to a URL, which is how gh pr
+// checkout sets up a fork's PR, takes the name it merges from. gh-wt opens
+// such a PR as <owner>/<branch> when the name is taken, and gh itself would
+// then look for a head named like the local branch and not find the PR.
+func localBranches() map[string]prHead {
+	heads := map[string]prHead{}
 	names, _ := git("for-each-ref", "--format=%(refname:short)", "refs/heads/")
 	for _, name := range strings.Fields(names) {
-		branches[name] = pulls{}
+		heads[name] = prHead{branch: name}
 	}
-	out, _ := git("config", "--get-regexp", `^(branch\..*\.(remote|merge)|remote\..*\.url)$`)
-	urls, remotes := map[string]string{}, map[string]string{}
+	out, _ := git("config", "--get-regexp", `^(branch\..*\.(remote|pushremote|merge)|remote\..*\.url|remote\.pushdefault|push\.default)$`)
+	urls, remotes, pushRemotes, merges := map[string]string{}, map[string]string{}, map[string]string{}, map[string]string{}
+	pushDefault, remotePushDefault := "", ""
 	for _, line := range strings.Split(out, "\n") {
 		key, value, _ := strings.Cut(line, " ")
+		switch key {
+		case "push.default":
+			pushDefault = value
+			continue
+		case "remote.pushdefault":
+			remotePushDefault = value
+			continue
+		}
 		section, rest, _ := strings.Cut(key, ".")
 		i := strings.LastIndex(rest, ".")
 		if i < 0 {
@@ -861,23 +889,32 @@ func localBranches() map[string]pulls {
 			urls[name] = value
 		case variable == "remote":
 			remotes[name] = value
+		case variable == "pushremote":
+			pushRemotes[name] = value
 		default:
-			if p, ok := branches[name]; ok {
-				p.ref = value
-				branches[name] = p
-			}
+			merges[name] = value
 		}
 	}
-	for name, remote := range remotes { // a remote's name, or a URL as gh sets for a fork
-		if p, ok := branches[name]; ok {
-			if url, named := urls[remote]; named {
-				remote = url
-			}
-			p.repo = repoOf(remote)
-			branches[name] = p
+	pullNumber := regexp.MustCompile(`^refs/pull/(\d+)/head$`)
+	for name, h := range heads {
+		if m := pullNumber.FindStringSubmatch(merges[name]); m != nil {
+			h.number, _ = strconv.Atoi(m[1])
+			heads[name] = h
+			continue
 		}
+		remote := cmp.Or(pushRemotes[name], remotePushDefault, remotes[name])
+		url, named := urls[remote]
+		if !named {
+			url = remote // a URL, as gh pr checkout sets for a fork
+		}
+		h.repo = repoOf(url)
+		merged, tracks := strings.CutPrefix(merges[name], "refs/heads/")
+		if tracks && (pushDefault == "upstream" || pushDefault == "tracking" || (remote != "" && !named)) {
+			h.branch = merged
+		}
+		heads[name] = h
 	}
-	return branches
+	return heads
 }
 
 // repoDefaultBranch is the repository's default branch on GitHub.
@@ -1796,7 +1833,7 @@ func parseStatus(out string) status {
 func fetchPRs() (map[string]pullRequest, string) {
 	// The open PRs, however old, and the newest PRs of any state: an open PR
 	// older than those would otherwise be missing here and shown in gh wt -p.
-	const fields = "headRefName,headRefOid,headRepositoryOwner,isCrossRepository,number,state,isDraft"
+	const fields = "headRefName,headRefOid,headRepositoryOwner,isCrossRepository,number,state,isDraft,url"
 	type result struct {
 		prs []pullRequest
 		msg string
@@ -1806,6 +1843,13 @@ func fetchPRs() (map[string]pullRequest, string) {
 		prs, msg := ghPRs("--state", "all", "--limit", "200", "--json", fields)
 		recent <- result{prs, msg}
 	}()
+	// The default branch as GitHub has it, which is what gh goes by. Without
+	// it (the lookup failed) no branch is treated as the default one.
+	def := make(chan string, 1)
+	go func() {
+		name, _ := repoDefaultBranch()
+		def <- name
+	}()
 	open, msg := ghPRs("--limit", openPRLimit, "--json", fields)
 	r := <-recent
 	if msg == "" {
@@ -1814,18 +1858,26 @@ func fetchPRs() (map[string]pullRequest, string) {
 	if msg != "" {
 		return nil, msg
 	}
-	return prByBranch(append(open, r.prs...), loadPRNames("")), ""
+	prs := append(open, r.prs...)
+	return prByBranch(prs, loadPRNames(<-def, baseRepo(prs))), ""
 }
 
-// prByBranch picks one PR per local branch from prs, which gh lists newest
-// first: the newest, unless an older one is open. A PR from a fork counts for
-// the local branch that holds it, not for one that only shares its name.
+// prByBranch gives each local branch its PR as gh pr view would: of the PRs
+// with the branch's head, an open one, else the newest (prs come newest
+// first). For the default branch only an open PR counts, as in gh.
 func prByBranch(prs []pullRequest, names prNames) map[string]pullRequest {
-	m := make(map[string]pullRequest, len(prs))
+	m := make(map[string]pullRequest, len(names.heads))
 	for _, pr := range prs {
-		branch, held := names.holder(pr)
-		if prev, ok := m[branch]; held && (!ok || (prev.State != "OPEN" && pr.State == "OPEN")) {
-			m[branch] = pr
+		for branch, h := range names.heads {
+			if !h.isOf(pr, names.base) {
+				continue
+			}
+			if pr.State != "OPEN" && names.def != "" && h.number == 0 && h.owner(names.base) == "" && h.branch == names.def {
+				continue
+			}
+			if prev, ok := m[branch]; !ok || (prev.State != "OPEN" && pr.State == "OPEN") {
+				m[branch] = pr
+			}
 		}
 	}
 	return m
@@ -1875,15 +1927,6 @@ func parseWorktrees(out string) []worktree {
 func currentRoot() string {
 	root, _ := git("rev-parse", "--show-toplevel")
 	return root
-}
-
-// originRepo is "owner/name" parsed from origin's URL, or "" if it can't be.
-func originRepo() string {
-	url, err := git("remote", "get-url", "origin")
-	if err != nil {
-		return ""
-	}
-	return repoOf(url)
 }
 
 // repoOf is "owner/name" parsed from a repository's URL, or "" if it can't be.
