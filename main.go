@@ -338,7 +338,11 @@ func switchTo(dir, branch, startPoint string, orphan bool) {
 		fmt.Println(wt.path)
 		return
 	}
-	createWorktree(branch, filepath.Join(base, dir), base, startPoint, orphan)
+	path := filepath.Join(base, dir)
+	if err := checkNotNested(wts, path, base); err != nil {
+		fail(err.Error())
+	}
+	createWorktree(branch, path, base, startPoint, orphan)
 }
 
 // qualifyStartPoint keeps a start point that resolves to a commit, and turns a
@@ -656,11 +660,14 @@ func openPR(arg string) {
 	name := prBranch(pr, def)
 	_, base := repoBase()
 	path, reuse := filepath.Join(base, name), false
-	if wt, ok := findWorktree(liveWorktrees(), base, name); ok {
+	wts := liveWorktrees()
+	if wt, ok := findWorktree(wts, base, name); ok {
 		if wt.branch != name { // gh would switch that worktree to the PR's branch
 			fail(fmt.Sprintf("worktree %s (%s) already exists", tilde(wt.path), label(wt)))
 		}
 		path, reuse = wt.path, true
+	} else if err := checkNotNested(wts, path, base); err != nil {
+		fail(err.Error())
 	}
 	src := currentRoot()
 	args := []string{"pr", "checkout", arg, "--branch", name}
@@ -736,12 +743,8 @@ func renameWorktree(old []string, newName string, force bool) (string, error) {
 		if _, err := os.Lstat(newPath); err == nil {
 			return "", fmt.Errorf("%s already exists", tilde(newPath))
 		}
-		// Never move a worktree into another one (or into itself): deleting the
-		// outer worktree later would delete it too.
-		for dir := filepath.Dir(newPath); within(dir, base) && !samePath(dir, base); dir = filepath.Dir(dir) {
-			if slices.ContainsFunc(wts, func(wt worktree) bool { return samePath(wt.path, dir) }) {
-				return "", fmt.Errorf("%s would be inside the worktree %s", tilde(newPath), tilde(dir))
-			}
+		if err := checkNotNested(wts, newPath, base); err != nil { // or into itself
+			return "", err
 		}
 	}
 
@@ -814,6 +817,17 @@ func undoBranchRename(mainRoot, oldName, newName, overwritten string) error {
 		}
 	}
 	return fmt.Errorf("failed to move worktree; renamed the branch back to %q", oldName)
+}
+
+// checkNotNested refuses a path inside one of the worktrees under base:
+// deleting the outer worktree later would delete the inner one's files too.
+func checkNotNested(wts []worktree, path, base string) error {
+	for dir := filepath.Dir(path); within(dir, base) && !samePath(dir, base); dir = filepath.Dir(dir) {
+		if slices.ContainsFunc(wts, func(wt worktree) bool { return samePath(wt.path, dir) }) {
+			return fmt.Errorf("%s would be inside the worktree %s", tilde(path), tilde(dir))
+		}
+	}
+	return nil
 }
 
 // removeEmptyParents removes dir and its parents while they are empty

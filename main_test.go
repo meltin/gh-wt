@@ -801,6 +801,60 @@ func TestCurrentWorktreeIsUnderHeader(t *testing.T) {
 	}
 }
 
+// cliRepo builds gh-wt and makes a repository with one commit. git runs git in
+// the repository; wt runs gh-wt there and returns its stdout and stderr.
+func cliRepo(t *testing.T) (repo string, git func(args ...string) string, wt func(args ...string) (string, string, error)) {
+	t.Helper()
+	gitEnv(t)
+	dir, _ := filepath.EvalSymlinks(t.TempDir())
+	bin := filepath.Join(dir, "gh-wt")
+	if out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
+		t.Fatalf("build: %v\n%s", err, out)
+	}
+	repo = filepath.Join(dir, "repo")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	git = func(args ...string) string {
+		t.Helper()
+		out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	wt = func(args ...string) (string, string, error) {
+		cmd := exec.Command(bin, args...)
+		cmd.Dir = repo
+		var stderr strings.Builder
+		cmd.Stderr = &stderr
+		out, err := cmd.Output()
+		return strings.TrimSpace(string(out)), stderr.String(), err
+	}
+	git("init", "-q", "-b", "main")
+	git("commit", "-q", "--allow-empty", "-m", "init")
+	return repo, git, wt
+}
+
+// A worktree inside another one would be deleted along with it.
+func TestCLINoWorktreeInsideAnother(t *testing.T) {
+	repo, git, wt := cliRepo(t)
+	if _, stderr, err := wt("-b", "me/feat", "feat"); err != nil {
+		t.Fatalf("create: %v\n%s", err, stderr)
+	}
+	out, stderr, err := wt("feat/x")
+	if err == nil || out != "" || !strings.Contains(stderr, "would be inside the worktree") {
+		t.Fatalf("feat/x inside the worktree feat: %q, %v\n%s", out, err, stderr)
+	}
+	if exists(filepath.Join(repo, ".wt/feat/x")) || strings.Contains(git("branch"), "feat/x") {
+		t.Error("nothing should be created")
+	}
+	// A directory that only shares the parent is fine.
+	if _, stderr, err := wt("other/x"); err != nil {
+		t.Fatalf("other/x: %v\n%s", err, stderr)
+	}
+}
+
 // gitEnv keeps the user's git config out of a test and lets it commit.
 func gitEnv(t *testing.T) {
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
