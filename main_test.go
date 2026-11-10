@@ -96,11 +96,7 @@ func TestExpandBaseDir(t *testing.T) {
 }
 
 func TestDeleteTargets(t *testing.T) {
-	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
-	t.Setenv("GIT_AUTHOR_NAME", "t")
-	t.Setenv("GIT_AUTHOR_EMAIL", "t@t")
-	t.Setenv("GIT_COMMITTER_NAME", "t")
-	t.Setenv("GIT_COMMITTER_EMAIL", "t@t")
+	gitEnv(t)
 	dir, _ := filepath.EvalSymlinks(t.TempDir())
 	repo := filepath.Join(dir, "repo")
 	run := func(args ...string) {
@@ -160,11 +156,7 @@ func TestDeleteTargets(t *testing.T) {
 // TestDeleteTargetsEdgeCases covers cases found in review: lookup precedence,
 // the main HEAD branch, vanished worktrees, empty and duplicate targets.
 func TestDeleteTargetsEdgeCases(t *testing.T) {
-	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
-	t.Setenv("GIT_AUTHOR_NAME", "t")
-	t.Setenv("GIT_AUTHOR_EMAIL", "t@t")
-	t.Setenv("GIT_COMMITTER_NAME", "t")
-	t.Setenv("GIT_COMMITTER_EMAIL", "t@t")
+	gitEnv(t)
 	dir, _ := filepath.EvalSymlinks(t.TempDir())
 	repo := filepath.Join(dir, "repo")
 	run := func(args ...string) {
@@ -232,11 +224,7 @@ func TestDeleteTargetsEdgeCases(t *testing.T) {
 }
 
 func TestRenameWorktree(t *testing.T) {
-	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
-	t.Setenv("GIT_AUTHOR_NAME", "t")
-	t.Setenv("GIT_AUTHOR_EMAIL", "t@t")
-	t.Setenv("GIT_COMMITTER_NAME", "t")
-	t.Setenv("GIT_COMMITTER_EMAIL", "t@t")
+	gitEnv(t)
 	dir, _ := filepath.EvalSymlinks(t.TempDir())
 	repo := filepath.Join(dir, "repo")
 	run := func(args ...string) {
@@ -303,11 +291,7 @@ func TestRenameWorktree(t *testing.T) {
 // before anything moves, no worktree may nest in another, and a symlinked base
 // still gets its empty parents cleaned up.
 func TestRenameWorktreeConflicts(t *testing.T) {
-	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
-	t.Setenv("GIT_AUTHOR_NAME", "t")
-	t.Setenv("GIT_AUTHOR_EMAIL", "t@t")
-	t.Setenv("GIT_COMMITTER_NAME", "t")
-	t.Setenv("GIT_COMMITTER_EMAIL", "t@t")
+	gitEnv(t)
 	dir, _ := filepath.EvalSymlinks(t.TempDir())
 	repo := filepath.Join(dir, "repo")
 	run := func(args ...string) {
@@ -369,11 +353,7 @@ func TestRenameWorktreeConflicts(t *testing.T) {
 // renamed leaves everything as it was, including pre-existing paths under base
 // and a branch that -M overwrote.
 func TestRenameWorktreeFailedMove(t *testing.T) {
-	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
-	t.Setenv("GIT_AUTHOR_NAME", "t")
-	t.Setenv("GIT_AUTHOR_EMAIL", "t@t")
-	t.Setenv("GIT_COMMITTER_NAME", "t")
-	t.Setenv("GIT_COMMITTER_EMAIL", "t@t")
+	gitEnv(t)
 	dir, _ := filepath.EvalSymlinks(t.TempDir())
 	repo := filepath.Join(dir, "repo")
 	wt := filepath.Join(repo, ".wt")
@@ -425,11 +405,7 @@ func TestRenameWorktreeFailedMove(t *testing.T) {
 }
 
 func TestQualifyStartPoint(t *testing.T) {
-	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
-	t.Setenv("GIT_AUTHOR_NAME", "t")
-	t.Setenv("GIT_AUTHOR_EMAIL", "t@t")
-	t.Setenv("GIT_COMMITTER_NAME", "t")
-	t.Setenv("GIT_COMMITTER_EMAIL", "t@t")
+	gitEnv(t)
 	dir, _ := filepath.EvalSymlinks(t.TempDir())
 	repo := filepath.Join(dir, "repo")
 	run := func(args ...string) {
@@ -503,11 +479,7 @@ func TestCheckDestination(t *testing.T) {
 // TestCLIBranchAndOrphan runs the built binary for -b and --orphan, whose
 // create paths exit the process on errors.
 func TestCLIBranchAndOrphan(t *testing.T) {
-	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
-	t.Setenv("GIT_AUTHOR_NAME", "t")
-	t.Setenv("GIT_AUTHOR_EMAIL", "t@t")
-	t.Setenv("GIT_COMMITTER_NAME", "t")
-	t.Setenv("GIT_COMMITTER_EMAIL", "t@t")
+	gitEnv(t)
 	dir, _ := filepath.EvalSymlinks(t.TempDir())
 	bin := filepath.Join(dir, "gh-wt")
 	if out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
@@ -631,11 +603,7 @@ func TestCLIBranchAndOrphan(t *testing.T) {
 }
 
 func TestPRBehind(t *testing.T) {
-	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
-	t.Setenv("GIT_AUTHOR_NAME", "t")
-	t.Setenv("GIT_AUTHOR_EMAIL", "t@t")
-	t.Setenv("GIT_COMMITTER_NAME", "t")
-	t.Setenv("GIT_COMMITTER_EMAIL", "t@t")
+	gitEnv(t)
 	repo := t.TempDir()
 	run := func(args ...string) string {
 		t.Helper()
@@ -711,11 +679,7 @@ func TestOriginRepoAndInOrigin(t *testing.T) {
 // TestPRBehindNoLazyFetch: in a partial clone, an unfetched PR head must not
 // be fetched just to draw the table.
 func TestPRBehindNoLazyFetch(t *testing.T) {
-	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
-	t.Setenv("GIT_AUTHOR_NAME", "t")
-	t.Setenv("GIT_AUTHOR_EMAIL", "t@t")
-	t.Setenv("GIT_COMMITTER_NAME", "t")
-	t.Setenv("GIT_COMMITTER_EMAIL", "t@t")
+	gitEnv(t)
 	dir := t.TempDir()
 	server, clone := filepath.Join(dir, "server"), filepath.Join(dir, "clone")
 	git := func(args ...string) string {
@@ -775,7 +739,7 @@ func TestRenderPRTableFits(t *testing.T) {
 		UpdatedAt:   time.Now().Add(-3 * 24 * time.Hour),
 	}}
 	prs[0].Author.Login = "someone"
-	header, lines := renderPRTable(prs, nil, worktree{}, "main", 100)
+	header, lines, _ := renderPRTable(prs, nil, worktree{}, "main", 100)
 	for _, l := range append(lines, header) {
 		if w := ansi.StringWidth(l) + 2; w > 100 {
 			t.Errorf("width %d > 100: %q", w, ansi.Strip(l))
@@ -787,8 +751,7 @@ func TestRenderPRTableFits(t *testing.T) {
 }
 
 func TestPROptionsMoveCurrentUnderHeader(t *testing.T) {
-	prs := []pullRequest{{HeadRefName: "there"}, {HeadRefName: "here"}, {HeadRefName: "other"}}
-	description, options := prOptions(prs, "HEADER", []string{"line0", "line1", "line2"}, "main", "here")
+	description, options := prOptions("HEADER", []string{"line0", "line1", "line2"}, []bool{false, true, false})
 	if want := "HEADER\n" + iconCurrent + " line1"; ansi.Strip(description) != want {
 		t.Errorf("description = %q, want %q", ansi.Strip(description), want)
 	}
@@ -798,25 +761,53 @@ func TestPROptionsMoveCurrentUnderHeader(t *testing.T) {
 	}
 }
 
-func TestCurrentWorktreeWithoutPRIsUnderHeader(t *testing.T) {
-	prs := []pullRequest{{Number: 1, HeadRefName: "other"}}
-	here := worktree{path: t.TempDir(), branch: "here"}
-	header, lines := renderPRTable(prs, []worktree{here}, here, "main", 0)
-	if len(lines) != 2 || !strings.Contains(lines[1], "here") {
-		t.Fatalf("want a line for the branch after the PR's: %q", lines)
+func TestCurrentWorktreeIsUnderHeader(t *testing.T) {
+	initStyles()
+	gitEnv(t)
+	repo := t.TempDir()
+	if out, err := exec.Command("git", "-C", repo, "init", "-q", "-b", "here").CombinedOutput(); err != nil {
+		t.Fatalf("%v\n%s", err, out)
 	}
-	description, options := prOptions(prs, header, lines, "main", here.branch)
+	if err := os.WriteFile(filepath.Join(repo, "new"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prs := []pullRequest{{Number: 1, HeadRefName: "other"}}
+	here := worktree{path: repo, branch: "here"}
+
+	// Without a PR on the branch, it gets a line with its changes after the PR's.
+	header, lines, current := renderPRTable(prs, []worktree{here}, here, "main", 0)
+	if len(lines) != 2 || !slices.Equal(current, []bool{false, true}) {
+		t.Fatalf("lines = %q, current = %v", lines, current)
+	}
+	if l := ansi.Strip(lines[1]); !strings.Contains(l, "?1") || !strings.Contains(l, "here") {
+		t.Errorf("the branch's line should show it and its untracked file: %q", l)
+	}
+	description, options := prOptions(header, lines, current)
 	if !strings.Contains(ansi.Strip(description), "here") {
 		t.Errorf("the branch should be under the header: %q", ansi.Strip(description))
 	}
 	if len(options) != 1 || options[0].Value != 0 {
 		t.Errorf("options = %v, want only PR 0", options)
 	}
+
 	// With a PR on the branch, that PR's line is the current one: no extra line.
 	prs = append(prs, pullRequest{Number: 2, HeadRefName: "here"})
-	if _, lines := renderPRTable(prs, []worktree{here}, here, "main", 0); len(lines) != 2 {
-		t.Errorf("no extra line when the branch has a PR: %q", lines)
+	_, lines, current = renderPRTable(prs, []worktree{here}, here, "main", 0)
+	if len(lines) != 2 || !slices.Equal(current, []bool{false, true}) {
+		t.Fatalf("lines = %q, current = %v", lines, current)
 	}
+	if l := ansi.Strip(lines[1]); !strings.Contains(l, "?1") || !strings.Contains(l, "#2") {
+		t.Errorf("the PR's line should show the worktree's untracked file: %q", l)
+	}
+}
+
+// gitEnv keeps the user's git config out of a test and lets it commit.
+func gitEnv(t *testing.T) {
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_AUTHOR_NAME", "t")
+	t.Setenv("GIT_AUTHOR_EMAIL", "t@t")
+	t.Setenv("GIT_COMMITTER_NAME", "t")
+	t.Setenv("GIT_COMMITTER_EMAIL", "t@t")
 }
 
 // pickerRows are three worktrees (the first current) and a PR for each branch.
@@ -993,11 +984,7 @@ func TestPickerLookupBeforeSize(t *testing.T) {
 // The PR column's room comes from the PR numbers in the default branch's subjects.
 func TestPRColumnWidth(t *testing.T) {
 	initStyles()
-	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
-	t.Setenv("GIT_AUTHOR_NAME", "t")
-	t.Setenv("GIT_AUTHOR_EMAIL", "t@t")
-	t.Setenv("GIT_COMMITTER_NAME", "t")
-	t.Setenv("GIT_COMMITTER_EMAIL", "t@t")
+	gitEnv(t)
 	repo := t.TempDir()
 	run := func(args ...string) {
 		t.Helper()

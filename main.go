@@ -533,8 +533,7 @@ func selectPR() {
 	if j := slices.IndexFunc(wts, func(wt worktree) bool { return samePath(wt.path, current) }); j >= 0 {
 		here = wts[j]
 	}
-	header, lines := renderPRTable(prs, wts, here, def, width)
-	description, options := prOptions(prs, header, lines, def, here.branch)
+	description, options := prOptions(renderPRTable(prs, wts, here, def, width))
 	if len(options) == 0 {
 		fail("no other open pull requests")
 	}
@@ -556,12 +555,15 @@ func selectPR() {
 // renderPRTable lays out PRs with the worktree's CHANGES when one exists, so
 // it's clear whether selecting moves to it or creates it. When no PR is on the
 // current worktree here's branch, it gets a line of its own after the PRs'.
-func renderPRTable(prs []pullRequest, wts []worktree, here worktree, def string, maxWidth int) (string, []string) {
+// current marks the lines of here's branch.
+func renderPRTable(prs []pullRequest, wts []worktree, here worktree, def string, maxWidth int) (header string, lines []string, current []bool) {
 	const colTitle, colBranch = 2, 3
 	cells := make([][]string, len(prs))
+	current = make([]bool, len(prs))
 	for i, pr := range prs {
 		changes := ""
 		name := prBranch(pr, def)
+		current[i] = name == here.branch
 		if j := slices.IndexFunc(wts, func(wt worktree) bool { return wt.branch == name }); j >= 0 {
 			s := worktreeStatus(wts[j].path)
 			n, known := prBehind(wts[j].path, pr.HeadRefOid)
@@ -581,22 +583,24 @@ func renderPRTable(prs []pullRequest, wts []worktree, here worktree, def string,
 			grayStyle.Render(humanize.Time(pr.UpdatedAt)),
 		}
 	}
-	if here.path != "" && !slices.ContainsFunc(prs, func(pr pullRequest) bool { return prBranch(pr, def) == here.branch }) {
+	if here.path != "" && !slices.Contains(current, true) {
 		cells = append(cells, []string{statusCell(worktreeStatus(here.path)), "", "", ansi.Truncate(branchCell(here), 28, "…"), "", ""})
+		current = append(current, true)
 	}
-	return layoutTable([]string{"WORKTREE", "PR", "TITLE", "BRANCH", "AUTHOR", "UPDATED"}, cells, maxWidth, []shrinkStep{
+	header, lines = layoutTable([]string{"WORKTREE", "PR", "TITLE", "BRANCH", "AUTHOR", "UPDATED"}, cells, maxWidth, []shrinkStep{
 		{colTitle, 30}, {colBranch, 20}, {colTitle, 10}, {colBranch, 10},
 	}, nil)
+	return header, lines, current
 }
 
 // prOptions is the select's description and options: as in the worktree picker,
-// the line of the branch here (a PR's, or the extra one after them) goes under
-// the header, where it can't be selected.
-func prOptions(prs []pullRequest, header string, lines []string, def, here string) (string, []huh.Option[int]) {
+// the current lines go under the header, where they can't be selected. An
+// option's value is its line's index, which is its PR's.
+func prOptions(header string, lines []string, current []bool) (string, []huh.Option[int]) {
 	description := header
 	var options []huh.Option[int]
 	for i, line := range lines {
-		if i >= len(prs) || prBranch(prs[i], def) == here {
+		if current[i] {
 			description += "\n" + currentLine(line)
 			continue
 		}
