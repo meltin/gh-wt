@@ -1,0 +1,46 @@
+name: Claude Code Review
+
+on:
+  pull_request:
+    # push ごとの再レビューはせず、途中の再レビューは @claude のコメントで頼む
+    types: [opened, ready_for_review, reopened]
+
+jobs:
+  claude-review:
+    # 83203852 は k.suzuki の GitHub ユーザー ID
+    # draft は ready for review にしたときに1回だけレビューする
+    if: >-
+      github.event.pull_request.user.id == 83203852
+      && !github.event.pull_request.draft
+
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: read
+      id-token: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Run Claude Code Review
+        id: claude-review
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # @claude のコメントと同じ tag モードで動かす。アクションがPRの本文・コメント・
+          # 変更ファイルを取得してから Claude を起動し、進捗の追跡コメントを付ける。
+          track_progress: true
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+
+            このPRをレビューしてください。差分は git diff origin/${{ github.event.pull_request.base.ref }}...HEAD で読んでください。
+            差分は全ファイルを読み切ってからレビューしてください。大きい場合はファイルごとに分けて読み、読んでいない範囲を残さないでください。
+            コードを読んで確信が持てた指摘だけを書き、確信のない推測は書かないでください。
+            各指摘の冒頭に優先度を [P0] か [P1] の形で付けてください。P0 はマージ前に直すべきもの（不具合、認可やデータ保護の抜け、仕様と違う動作）、P1 は直したほうがよいものです。書き方の好み、些細な改善、任意のリファクタリングは書かないでください。
+            個別の問題は該当行へのインラインコメントで、全体の所見はまとめのコメントで、日本語で書いてください。問題がなければ、まとめのコメントを1〜2行で済ませてください。
+          claude_args: '--allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"'
