@@ -1033,16 +1033,42 @@ func copyFiles(src, dst, base string) {
 		}
 		if strings.HasSuffix(e, "/") {
 			copiedDir = e
-			from += "/." // copy the contents, so an existing dst directory is merged into
 		}
-		err := os.MkdirAll(filepath.Dir(to), 0o755)
-		if err == nil {
-			err = exec.Command("cp", cpFlags, from, to).Run()
-		}
-		if err != nil {
+		if err := copyEntry(from, to, base, cpFlags); err != nil {
 			fmt.Fprintln(os.Stderr, grayStyle.Render(fmt.Sprintf("warning: failed to copy %s: %v", e, err)))
 		}
 	}
+}
+
+// copyEntry copies the file or directory from to to. A directory that holds
+// the worktree base (wt.basedir two or more levels deep) is copied entry by
+// entry around it, or every sibling worktree would be copied in.
+func copyEntry(from, to, base, cpFlags string) error {
+	info, err := os.Lstat(from)
+	if err != nil {
+		return err
+	}
+	if info.IsDir() && within(base, from) {
+		if samePath(from, base) {
+			return nil
+		}
+		children, err := os.ReadDir(from)
+		if err != nil {
+			return err
+		}
+		var errs []error
+		for _, c := range children {
+			errs = append(errs, copyEntry(filepath.Join(from, c.Name()), filepath.Join(to, c.Name()), base, cpFlags))
+		}
+		return errors.Join(errs...)
+	}
+	if info.IsDir() {
+		from += "/." // copy the contents, so an existing directory is merged into
+	}
+	if err := os.MkdirAll(filepath.Dir(to), 0o755); err != nil {
+		return err
+	}
+	return exec.Command("cp", cpFlags, from, to).Run()
 }
 
 // within reports whether path is dir or inside it.
