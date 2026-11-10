@@ -102,10 +102,10 @@ func TestPRByBranch(t *testing.T) {
 		p.HeadRepositoryOwner.Login = forkOwner
 		return p
 	}
-	names := prNames{def: "main", base: "up/proj", heads: map[string]prHead{
+	names := prNames{def: "main", bases: []string{"up/proj"}, heads: map[string]prHead{
 		"main":          {repo: "up/proj", branch: "main"},
 		"feat":          {repo: "up/proj", branch: "feat"},        // pushes to the repository itself
-		"done":          {repo: "Up/Proj", branch: "done"},        // ... whatever the case of its URL
+		"done":          {repo: "Old/Name", branch: "done"},       // ... under the name it had when cloned
 		"local":         {branch: "local"},                        // no remote: the repository itself, as gh assumes
 		"develop":       {repo: "me/proj", branch: "develop"},     // pushes to our fork
 		"review":        {repo: "someone/proj", branch: "review"}, // a fork's PR opened with gh pr checkout
@@ -129,7 +129,7 @@ func TestPRByBranch(t *testing.T) {
 		pr(4, "CLOSED", "done", ""),
 		pr(3, "OPEN", "unknown", "someone"), // no local branch
 		pr(2, "OPEN", "whatever", "someone"),
-	}, names)
+	}, prNames{def: names.def, bases: append(names.bases, "old/name"), heads: names.heads})
 	want := map[string]int{"feat": 7, "done": 5, "local": 13, "develop": 14, "review": 11, "someone/taken": 12, "readonly": 2}
 	for branch, number := range want {
 		if got[branch].Number != number {
@@ -731,9 +731,6 @@ func TestRepoOf(t *testing.T) {
 			t.Errorf("repoOf(%q) = %q, want %q", url, got, want)
 		}
 	}
-	if got := baseRepo([]pullRequest{{URL: "https://github.com/up/proj/pull/7"}}); got != "up/proj" {
-		t.Errorf("baseRepo = %q", got)
-	}
 }
 
 // TestPRBehindNoLazyFetch: in a partial clone, an unfetched PR head must not
@@ -774,7 +771,7 @@ func TestPRBranch(t *testing.T) {
 		p.HeadRepositoryOwner.Login = "someone"
 		return p
 	}
-	names := prNames{def: "main", base: "up/proj", heads: map[string]prHead{
+	names := prNames{def: "main", bases: []string{"up/proj"}, heads: map[string]prHead{
 		"mine":     {repo: "up/proj", branch: "mine"},        // our own branch, pushed
 		"unpushed": {branch: "unpushed"},                     // our own branch, no remote
 		"theirs":   {repo: "Someone/proj", branch: "theirs"}, // gh pr checkout of a fork that can be pushed to
@@ -811,7 +808,7 @@ func TestLocalBranches(t *testing.T) {
 	run("commit", "-q", "--allow-empty", "-m", "init")
 	run("remote", "add", "origin", "git@github.com:me/proj.git")
 	run("remote", "add", "upstream", "https://github.com/up/proj.git")
-	for _, b := range []string{"mine", "tracks-main", "to-upstream", "theirs", "someone/taken", "readonly", "feat/plain"} {
+	for _, b := range []string{"mine", "tracks-main", "to-upstream", "on-mine", "theirs", "someone/taken", "readonly", "feat/plain"} {
 		run("branch", b)
 	}
 	config := func(branch string, pairs ...string) {
@@ -822,14 +819,19 @@ func TestLocalBranches(t *testing.T) {
 	config("mine", "remote", "origin", "merge", "refs/heads/mine")
 	config("tracks-main", "remote", "upstream", "merge", "refs/heads/main") // git switch -c tracks-main upstream/main
 	config("to-upstream", "remote", "origin", "pushRemote", "upstream", "merge", "refs/heads/to-upstream")
+	config("on-mine", "remote", ".", "merge", "refs/heads/mine") // git switch -c on-mine -t mine
 	// As gh pr checkout writes them for a fork's PR:
 	config("theirs", "remote", "git@github.com:someone/proj.git", "pushRemote", "git@github.com:someone/proj.git", "merge", "refs/heads/theirs")
 	config("someone/taken", "remote", "git@github.com:someone/proj.git", "pushRemote", "git@github.com:someone/proj.git", "merge", "refs/heads/taken")
 	config("readonly", "remote", "upstream", "merge", "refs/pull/7/head")
 	t.Chdir(repo)
-	check := func(want map[string]prHead) {
+	check := func(want map[string]prHead, wantBases ...string) {
 		t.Helper()
-		got := localBranches()
+		got, bases := localBranches()
+		slices.Sort(bases)
+		if !slices.Equal(bases, wantBases) {
+			t.Errorf("bases = %v, want %v", bases, wantBases)
+		}
 		if len(got) != len(want) {
 			t.Errorf("got %d branches: %v", len(got), got)
 		}
@@ -844,12 +846,16 @@ func TestLocalBranches(t *testing.T) {
 		"mine":          {repo: "me/proj", branch: "mine"},
 		"tracks-main":   {repo: "up/proj", branch: "tracks-main"}, // the name it pushes as, not what it merges
 		"to-upstream":   {repo: "up/proj", branch: "to-upstream"}, // pushRemote before remote
+		"on-mine":       {branch: "on-mine"},                      // its own name, not the local branch it tracks
 		"theirs":        {repo: "someone/proj", branch: "theirs"},
 		"someone/taken": {repo: "someone/proj", branch: "taken"},
 		"readonly":      {number: 7, branch: "readonly"},
 		"feat/plain":    {branch: "feat/plain"},
 	}
-	check(want)
+	check(want) // two remotes and none chosen with gh repo set-default: no base from them
+
+	run("config", "remote.upstream.gh-resolved", "base")
+	check(want, "up/proj")
 
 	// remote.pushDefault comes before branch.<name>.remote, and push.default
 	// upstream pushes to the branch that is merged from.
@@ -858,7 +864,14 @@ func TestLocalBranches(t *testing.T) {
 	want["main"] = prHead{repo: "me/proj", branch: "main"}
 	want["feat/plain"] = prHead{repo: "me/proj", branch: "feat/plain"}
 	want["tracks-main"] = prHead{repo: "me/proj", branch: "main"}
-	check(want)
+	want["on-mine"] = prHead{repo: "me/proj", branch: "mine"}
+	check(want, "up/proj")
+
+	// With one remote, that is the base repository.
+	run("remote", "remove", "upstream")
+	if _, bases := localBranches(); !slices.Equal(bases, []string{"me/proj"}) {
+		t.Errorf("bases with one remote = %v", bases)
+	}
 }
 
 func TestRenderPRTableFits(t *testing.T) {
