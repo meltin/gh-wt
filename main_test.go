@@ -928,6 +928,37 @@ func TestCLICopyModifiedSkipsDeleted(t *testing.T) {
 	}
 }
 
+// With wt.basedir two levels deep, the directory above it is copied without
+// the worktrees in it.
+func TestCLICopyAroundNestedBase(t *testing.T) {
+	repo, git, wt := cliRepo(t)
+	git("config", "wt.basedir", "work/trees")
+	git("config", "wt.copyuntracked", "true")
+	for _, name := range []string{"work/notes.txt", "work/sub/deep.txt"} {
+		path := filepath.Join(repo, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, name := range []string{"n1", "n2"} {
+		path, stderr, err := wt(name)
+		if err != nil || strings.Contains(stderr, "warning") {
+			t.Fatalf("create %s: %v\n%s", name, err, stderr)
+		}
+		for _, copied := range []string{"work/notes.txt", "work/sub/deep.txt"} {
+			if !exists(filepath.Join(path, copied)) {
+				t.Errorf("%s: %s was not copied", name, copied)
+			}
+		}
+		if exists(filepath.Join(path, "work/trees")) {
+			t.Errorf("%s: the worktrees under work/trees were copied in", name)
+		}
+	}
+}
+
 // gitEnv keeps the user's git config out of a test and lets it commit.
 func gitEnv(t *testing.T) {
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
