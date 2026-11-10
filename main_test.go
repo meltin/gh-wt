@@ -1028,6 +1028,40 @@ func TestCLIRenameCaseOnly(t *testing.T) {
 	}
 }
 
+// wt.copyuntracked leaves out the ignored files of an untracked directory
+// unless wt.copyignored asks for them.
+func TestCLICopyUntrackedWithoutIgnored(t *testing.T) {
+	repo, git, wt := cliRepo(t)
+	for name, content := range map[string]string{".gitignore": ".env\n", "pkg/u.txt": "u", "pkg/.env": "secret", "pkg/deep/.env": "secret"} {
+		path := filepath.Join(repo, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	git("add", ".gitignore")
+	git("commit", "-q", "-m", "ignore")
+	git("config", "wt.copyuntracked", "true")
+	path, stderr, err := wt("untracked-only")
+	if err != nil || strings.Contains(stderr, "warning") {
+		t.Fatalf("create: %v\n%s", err, stderr)
+	}
+	if !exists(filepath.Join(path, "pkg/u.txt")) {
+		t.Error("the untracked file was not copied")
+	}
+	for _, name := range []string{"pkg/.env", "pkg/deep/.env"} {
+		if exists(filepath.Join(path, name)) {
+			t.Errorf("the ignored %s was copied without wt.copyignored", name)
+		}
+	}
+	git("config", "wt.copyignored", "true")
+	if path, _, err = wt("both"); err != nil || !exists(filepath.Join(path, "pkg/u.txt")) || !exists(filepath.Join(path, "pkg/deep/.env")) {
+		t.Errorf("with wt.copyignored both kinds should be copied: %v", err)
+	}
+}
+
 // gitIn returns a function that runs git in repo, fails the test when git
 // does, and returns its output.
 func gitIn(t *testing.T, repo string) func(args ...string) string {

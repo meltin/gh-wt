@@ -1048,17 +1048,27 @@ func branchExists(name string) bool {
 // wt.copymodified select from the src worktree into dst. Directories are listed
 // as one entry and copied whole, cloned on APFS with cp -c.
 func copyFiles(src, dst, base string) {
+	on := func(key string) bool { // literal "true", as git-wt reads it
+		value, _ := git("config", "--get", key)
+		return value == "true"
+	}
+	// An untracked directory is one entry, copied whole, only when its ignored
+	// files are wanted too; otherwise git lists its files without them.
+	untracked := []string{"--others", "--exclude-standard"}
+	if on("wt.copyignored") {
+		untracked = append(untracked, "--directory")
+	}
 	lists := []struct {
 		key  string
 		args []string
 	}{
 		{"wt.copyignored", []string{"--others", "--ignored", "--exclude-standard", "--directory"}},
-		{"wt.copyuntracked", []string{"--others", "--exclude-standard", "--directory"}},
+		{"wt.copyuntracked", untracked},
 		{"wt.copymodified", []string{"--modified"}},
 	}
 	var entries []string
 	for _, l := range lists {
-		if on, _ := git("config", "--get", l.key); on != "true" { // literal "true", as git-wt reads it
+		if !on(l.key) {
 			continue
 		}
 		// -z: without it git quotes names with non-ASCII or special characters.
