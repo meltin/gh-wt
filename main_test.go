@@ -959,6 +959,22 @@ func TestCLICopyAroundNestedBase(t *testing.T) {
 	}
 }
 
+// A wt.hook value that spans lines is one command; each value is a hook.
+func TestCLIHookSpanningLines(t *testing.T) {
+	_, git, wt := cliRepo(t)
+	git("config", "wt.hook", "if true; then\n  touch first\nfi")
+	git("config", "--add", "wt.hook", "touch second")
+	path, stderr, err := wt("hooked")
+	if err != nil {
+		t.Fatalf("create: %v\n%s", err, stderr)
+	}
+	for _, name := range []string{"first", "second"} {
+		if !exists(filepath.Join(path, name)) {
+			t.Errorf("hook did not create %s\n%s", name, stderr)
+		}
+	}
+}
+
 // gitEnv keeps the user's git config out of a test and lets it commit.
 func gitEnv(t *testing.T) {
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
