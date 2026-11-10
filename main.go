@@ -664,8 +664,12 @@ func currentLine(line string) string {
 
 // openPRs returns the repository's open PRs, including ones from forks.
 func openPRs() ([]pullRequest, string) {
-	return ghPRs("--limit", "100", "--json", "number,title,headRefName,headRefOid,headRepositoryOwner,isDraft,isCrossRepository,author,updatedAt")
+	return ghPRs("--limit", openPRLimit, "--json", "number,title,headRefName,headRefOid,headRepositoryOwner,isDraft,isCrossRepository,author,updatedAt")
 }
+
+// openPRLimit is how many open PRs are asked for: more than a repository has,
+// in practice. gh fetches them 100 at a time, so a small repository pays nothing.
+const openPRLimit = "1000"
 
 // ghPRs runs gh pr list with args. The error is what gh said, or how it failed
 // when it said nothing, so a failure never looks like an empty list.
@@ -1703,11 +1707,27 @@ func parseStatus(out string) status {
 
 // fetchPRs returns the newest PR per head branch, or gh's error message.
 func fetchPRs() (map[string]pullRequest, string) {
-	prs, msg := ghPRs("--state", "all", "--limit", "200", "--json", "headRefName,headRefOid,headRepository,isCrossRepository,number,state,isDraft")
+	// The open PRs, however old, and the newest PRs of any state: an open PR
+	// older than those would otherwise be missing here and shown in gh wt -p.
+	const fields = "headRefName,headRefOid,headRepository,isCrossRepository,number,state,isDraft"
+	type result struct {
+		prs []pullRequest
+		msg string
+	}
+	recent := make(chan result, 1)
+	go func() {
+		prs, msg := ghPRs("--state", "all", "--limit", "200", "--json", fields)
+		recent <- result{prs, msg}
+	}()
+	open, msg := ghPRs("--limit", openPRLimit, "--json", fields)
+	r := <-recent
+	if msg == "" {
+		msg = r.msg
+	}
 	if msg != "" {
 		return nil, msg
 	}
-	return prByBranch(prs, originRepo()), ""
+	return prByBranch(append(open, r.prs...), originRepo()), ""
 }
 
 // prByBranch picks one PR per head branch from prs, which gh lists newest
