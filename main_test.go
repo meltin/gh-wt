@@ -121,6 +121,33 @@ func TestPRByBranch(t *testing.T) {
 	}
 }
 
+// An open PR older than the newest PRs of any state is still found.
+func TestFetchPRsFindsOldOpenPR(t *testing.T) {
+	gitEnv(t)
+	stub := t.TempDir()
+	script := `#!/bin/sh
+case "$*" in
+*"--state all"*) echo '[{"number":9,"state":"MERGED","headRefName":"done"},{"number":8,"state":"CLOSED","headRefName":"retried"}]' ;;
+*) echo '[{"number":7,"state":"OPEN","headRefName":"retried"},{"number":3,"state":"OPEN","headRefName":"long-lived"}]' ;;
+esac
+`
+	if err := os.WriteFile(filepath.Join(stub, "gh"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", stub+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Chdir(t.TempDir()) // no origin: same-repository PRs all count
+
+	prs, msg := fetchPRs()
+	if msg != "" {
+		t.Fatal(msg)
+	}
+	for branch, want := range map[string]int{"long-lived": 3, "retried": 7, "done": 9} {
+		if prs[branch].Number != want {
+			t.Errorf("%s: PR #%d, want #%d", branch, prs[branch].Number, want)
+		}
+	}
+}
+
 func TestRenderTableFits(t *testing.T) {
 	initStyles()
 	rows := []row{{
