@@ -147,7 +147,8 @@ func TestFetchPRsFindsOldOpenPR(t *testing.T) {
 	stub := t.TempDir()
 	script := `#!/bin/sh
 case "$*" in
-*"--state all"*) echo '[{"number":9,"state":"MERGED","headRefName":"done","url":"https://github.com/up/proj/pull/9"},{"number":8,"state":"CLOSED","headRefName":"retried","url":"https://github.com/up/proj/pull/8"}]' ;;
+*"repo view"*) echo main ;;
+*"--state all"*) echo '[{"number":10,"state":"MERGED","headRefName":"main","url":"https://github.com/up/proj/pull/10"},{"number":9,"state":"MERGED","headRefName":"done","url":"https://github.com/up/proj/pull/9"},{"number":8,"state":"CLOSED","headRefName":"retried","url":"https://github.com/up/proj/pull/8"}]' ;;
 *) echo '[{"number":7,"state":"OPEN","headRefName":"retried","url":"https://github.com/up/proj/pull/7"},{"number":3,"state":"OPEN","headRefName":"long-lived","url":"https://github.com/up/proj/pull/3"}]' ;;
 esac
 `
@@ -172,6 +173,11 @@ esac
 		if prs[branch].Number != want {
 			t.Errorf("%s: PR #%d, want #%d", branch, prs[branch].Number, want)
 		}
+	}
+	// main is the default branch on GitHub, whatever the clone says: a merged
+	// PR whose head was main is not its PR.
+	if pr, ok := prs["main"]; ok {
+		t.Errorf("main: PR #%d, want none", pr.Number)
 	}
 }
 

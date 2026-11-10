@@ -1843,6 +1843,13 @@ func fetchPRs() (map[string]pullRequest, string) {
 		prs, msg := ghPRs("--state", "all", "--limit", "200", "--json", fields)
 		recent <- result{prs, msg}
 	}()
+	// The default branch as GitHub has it, which is what gh goes by. Without
+	// it (the lookup failed) no branch is treated as the default one.
+	def := make(chan string, 1)
+	go func() {
+		name, _ := repoDefaultBranch()
+		def <- name
+	}()
 	open, msg := ghPRs("--limit", openPRLimit, "--json", fields)
 	r := <-recent
 	if msg == "" {
@@ -1852,7 +1859,7 @@ func fetchPRs() (map[string]pullRequest, string) {
 		return nil, msg
 	}
 	prs := append(open, r.prs...)
-	return prByBranch(prs, loadPRNames(defaultBranch(), baseRepo(prs))), ""
+	return prByBranch(prs, loadPRNames(<-def, baseRepo(prs))), ""
 }
 
 // prByBranch gives each local branch its PR as gh pr view would: of the PRs
@@ -1865,7 +1872,7 @@ func prByBranch(prs []pullRequest, names prNames) map[string]pullRequest {
 			if !h.isOf(pr, names.base) {
 				continue
 			}
-			if pr.State != "OPEN" && h.number == 0 && h.owner(names.base) == "" && h.branch == names.def {
+			if pr.State != "OPEN" && names.def != "" && h.number == 0 && h.owner(names.base) == "" && h.branch == names.def {
 				continue
 			}
 			if prev, ok := m[branch]; !ok || (prev.State != "OPEN" && pr.State == "OPEN") {
