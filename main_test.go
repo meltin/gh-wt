@@ -196,6 +196,19 @@ func TestRenderTableFits(t *testing.T) {
 			t.Errorf("width %d > 100: %q", w, ansi.Strip(l))
 		}
 	}
+	// A path that doesn't fit whole is left out: shortened, it tells nothing.
+	if h, l := ansi.Strip(header), ansi.Strip(lines[0]); strings.Contains(h, "PATH") || strings.Contains(l, "/very/long") {
+		t.Errorf("the path should be left out in 100 cells:\n%s\n%s", h, l)
+	}
+	// Narrower still, the commit goes too, but the branch, its changes and its PR stay.
+	_, lines = renderTable(rows, 40, "", 0)
+	if l := ansi.Strip(lines[0]); ansi.StringWidth(l)+2 > 40 || !strings.Contains(l, "#1720") || strings.Contains(l, "31 hours") {
+		t.Errorf("40 cells should show the branch, changes and PR only: %q", l)
+	}
+	// Without a width to fit, as in a pipe, nothing is left out or shortened.
+	if _, lines = renderTable(rows, 0, "", 0); !strings.Contains(ansi.Strip(lines[0]), rows[0].wt.path) {
+		t.Errorf("the path should be whole without a width: %q", ansi.Strip(lines[0]))
+	}
 }
 
 func TestExpandBaseDir(t *testing.T) {
@@ -885,13 +898,42 @@ func TestRenderPRTableFits(t *testing.T) {
 	}}
 	prs[0].Author.Login = "someone"
 	header, lines, _ := renderPRTable(prs, nil, worktree{}, prNames{def: "main"}, 100)
-	for _, l := range append(lines, header) {
+	if w := ansi.StringWidth(header); w > 100 { // its indent is in it already
+		t.Errorf("header width %d > 100: %q", w, ansi.Strip(header))
+	}
+	for _, l := range lines {
 		if w := ansi.StringWidth(l) + 2; w > 100 {
 			t.Errorf("width %d > 100: %q", w, ansi.Strip(l))
 		}
 	}
 	if !strings.Contains(ansi.Strip(lines[0]), "#1720 draft") {
 		t.Errorf("draft PR should say so: %q", ansi.Strip(lines[0]))
+	}
+
+	// The worktree's path shows whole next to a title cut to 30 cells, and
+	// otherwise not at all, leaving the title the room it had without it.
+	path := "/worktrees/repo/fix/long-branch"
+	wts := []worktree{{path: path, branch: prs[0].HeadRefName}}
+	_, lines, _ = renderPRTable(prs, wts, worktree{}, prNames{def: "main"}, 140)
+	if l := ansi.Strip(lines[0]); !strings.Contains(l, path) || ansi.StringWidth(l)+2 > 140 {
+		t.Errorf("the path should show whole in 140 cells: %q", l)
+	}
+	header, lines, _ = renderPRTable(prs, wts, worktree{}, prNames{def: "main"}, 100)
+	if l := ansi.Strip(lines[0]); strings.Contains(l, "/worktrees") || !strings.Contains(l, "docs(e2e): GitHub") || ansi.StringWidth(l)+2 > 100 {
+		t.Errorf("the path should give way to the title in 100 cells: %q", l)
+	}
+	if h := ansi.Strip(header); strings.Contains(h, "PATH") || ansi.StringWidth(h) > 100 {
+		t.Errorf("the header should leave PATH out: %q", h)
+	}
+	// Narrower still, UPDATED goes before the title gets shorter than 20 cells,
+	header, lines, _ = renderPRTable(prs, wts, worktree{}, prNames{def: "main"}, 80)
+	if h, l := ansi.Strip(header), ansi.Strip(lines[0]); ansi.StringWidth(h) > 80 || ansi.StringWidth(l)+2 > 80 || strings.Contains(h, "UPDATED") || !strings.Contains(h, "AUTHOR") || !strings.Contains(l, "docs(e2e): GitHub") {
+		t.Errorf("80 cells should leave UPDATED out for the title:\n%s\n%s", h, l)
+	}
+	// and then AUTHOR, but the PR, its title and branch stay.
+	header, lines, _ = renderPRTable(prs, wts, worktree{}, prNames{def: "main"}, 60)
+	if h, l := ansi.Strip(header), ansi.Strip(lines[0]); ansi.StringWidth(h) > 60 || ansi.StringWidth(l)+2 > 60 || strings.Contains(h, "AUTHOR") || !strings.Contains(l, "#1720 draft") {
+		t.Errorf("60 cells should leave UPDATED and AUTHOR out and fit:\n%s\n%s", h, l)
 	}
 }
 
@@ -924,8 +966,8 @@ func TestCurrentWorktreeIsUnderHeader(t *testing.T) {
 	if len(lines) != 2 || !slices.Equal(current, []bool{false, true}) {
 		t.Fatalf("lines = %q, current = %v", lines, current)
 	}
-	if l := ansi.Strip(lines[1]); !strings.Contains(l, "?1") || !strings.Contains(l, "here") {
-		t.Errorf("the branch's line should show it and its untracked file: %q", l)
+	if l := ansi.Strip(lines[1]); !strings.Contains(l, "?1") || !strings.Contains(l, "here") || !strings.Contains(l, tilde(repo)) {
+		t.Errorf("the branch's line should show it, its untracked file and its path: %q", l)
 	}
 	description, options := prOptions(header, lines, current)
 	if !strings.Contains(ansi.Strip(description), "here") {
