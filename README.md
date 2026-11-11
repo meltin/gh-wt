@@ -96,7 +96,7 @@ gh wt only prints the path. To cd into it, add this to your .zshrc:
 | LAST COMMIT | Subject and relative time                                                                 |
 | PATH        | Worktree path, `~` for home                                                               |
 
-For a branch with an open PR, `↓` also counts commits pushed to the PR on GitHub that the worktree doesn't have yet, without fetching; `↓N` means there are such commits but they haven't been fetched, so they can't be counted. CHANGES is `unknown` for a worktree whose status can't be read (a locked worktree on a volume that isn't mounted, for one). In the picker, the current worktree is shown grayed out under the header and cannot be selected. When a table is wider than the terminal, the commit subject and BRANCH are shortened and PATH, which a shortened path wouldn't tell apart, is left out unless it fits whole; a narrower terminal leaves out the commit's time and then the commit as well.
+For a branch with an open PR, `↓` also counts commits pushed to the PR on GitHub that the worktree doesn't have yet, without fetching; `↓N` means there are such commits but they haven't been fetched, so they can't be counted. CHANGES is `unknown` for a worktree whose status can't be read (a locked worktree on a volume that isn't mounted, for one). In the picker, the current worktree is shown grayed out under the header and cannot be selected. When a table is wider than the terminal, the commit subject and BRANCH are shortened, and PATH is left out unless it fits whole, since the worktrees' paths start alike; a narrower terminal leaves out the commit's time and then the commit as well.
 
 ## Creating worktrees
 
