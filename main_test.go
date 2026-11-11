@@ -196,6 +196,19 @@ func TestRenderTableFits(t *testing.T) {
 			t.Errorf("width %d > 100: %q", w, ansi.Strip(l))
 		}
 	}
+	// A path that doesn't fit whole is left out: shortened, it tells nothing.
+	if h, l := ansi.Strip(header), ansi.Strip(lines[0]); strings.Contains(h, "PATH") || strings.Contains(l, "/very/long") {
+		t.Errorf("the path should be left out in 100 cells:\n%s\n%s", h, l)
+	}
+	// Narrower still, the commit goes too, but the branch, its changes and its PR stay.
+	_, lines = renderTable(rows, 40, "", 0)
+	if l := ansi.Strip(lines[0]); ansi.StringWidth(l)+2 > 40 || !strings.Contains(l, "#1720") || strings.Contains(l, "31 hours") {
+		t.Errorf("40 cells should show the branch, changes and PR only: %q", l)
+	}
+	// Without a width to fit, as in a pipe, nothing is left out or shortened.
+	if _, lines = renderTable(rows, 0, "", 0); !strings.Contains(ansi.Strip(lines[0]), rows[0].wt.path) {
+		t.Errorf("the path should be whole without a width: %q", ansi.Strip(lines[0]))
+	}
 }
 
 func TestExpandBaseDir(t *testing.T) {
@@ -911,6 +924,16 @@ func TestRenderPRTableFits(t *testing.T) {
 	}
 	if h := ansi.Strip(header); strings.Contains(h, "PATH") || ansi.StringWidth(h) > 100 {
 		t.Errorf("the header should leave PATH out: %q", h)
+	}
+	// Narrower still, UPDATED goes before the title gets shorter than 20 cells,
+	header, lines, _ = renderPRTable(prs, wts, worktree{}, prNames{def: "main"}, 80)
+	if h, l := ansi.Strip(header), ansi.Strip(lines[0]); ansi.StringWidth(h) > 80 || ansi.StringWidth(l)+2 > 80 || strings.Contains(h, "UPDATED") || !strings.Contains(h, "AUTHOR") || !strings.Contains(l, "docs(e2e): GitHub") {
+		t.Errorf("80 cells should leave UPDATED out for the title:\n%s\n%s", h, l)
+	}
+	// and then AUTHOR, but the PR, its title and branch stay.
+	header, lines, _ = renderPRTable(prs, wts, worktree{}, prNames{def: "main"}, 60)
+	if h, l := ansi.Strip(header), ansi.Strip(lines[0]); ansi.StringWidth(h) > 60 || ansi.StringWidth(l)+2 > 60 || strings.Contains(h, "AUTHOR") || !strings.Contains(l, "#1720 draft") {
+		t.Errorf("60 cells should leave UPDATED and AUTHOR out and fit:\n%s\n%s", h, l)
 	}
 }
 

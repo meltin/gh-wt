@@ -616,27 +616,18 @@ func prCells(prs []pullRequest, wts []worktree, here worktree, names prNames) (c
 	return cells, current
 }
 
-// layoutPRTable aligns prCells' lines; with maxWidth > 0 the title and the
-// branch shrink so every line fits. The path is shown whole or not at all:
-// worktrees under wt.basedir share its prefix, so a shortened path doesn't
-// tell them apart. It is left out when it doesn't fit next to a title and a
-// branch cut to 30 and 20 cells.
+// layoutPRTable aligns prCells' lines to fit maxWidth. PATH goes first, then
+// UPDATED and AUTHOR, before the title, which tells the PRs apart, gets
+// shorter than 20 cells.
 func layoutPRTable(cells [][]string, maxWidth int) (header string, lines []string) {
-	const colTitle, colBranch, colPath = 2, 3, 6
-	titles := []string{"WORKTREE", "PR", "TITLE", "BRANCH", "AUTHOR", "UPDATED", "PATH"}
-	header, lines = layoutTable(titles, cells, maxWidth, []shrinkStep{{colTitle, 30}, {colBranch, 20}}, nil)
-	fits := ansi.StringWidth(header) <= maxWidth && // the header has its indent, the lines don't
-		!slices.ContainsFunc(lines, func(l string) bool { return ansi.StringWidth(l)+2 > maxWidth })
-	if maxWidth <= 0 || fits {
-		return header, lines
-	}
-	withoutPath := make([][]string, len(cells))
-	for i, cs := range cells {
-		withoutPath[i] = cs[:colPath]
-	}
-	return layoutTable(titles[:colPath], withoutPath, maxWidth, []shrinkStep{
-		{colTitle, 30}, {colBranch, 20}, {colTitle, 10}, {colBranch, 10},
-	}, nil)
+	const colTitle, colBranch = 2, 3
+	keepTitle := []shrinkStep{{colTitle, 30}, {colBranch, 20}, {colTitle, 20}}
+	return layoutFirstFit([]string{"WORKTREE", "PR", "TITLE", "BRANCH", "AUTHOR", "UPDATED", "PATH"}, cells, maxWidth, nil, []tableLayout{
+		{7, []shrinkStep{{colTitle, 30}, {colBranch, 20}}},
+		{6, keepTitle},
+		{5, keepTitle},
+		{4, []shrinkStep{{colTitle, 30}, {colBranch, 20}, {colTitle, 10}, {colBranch, 10}}},
+	})
 }
 
 // prPicker runs the PR select and lays its table out again when the terminal
@@ -1680,12 +1671,12 @@ func filtering[T comparable](s *huh.Select[T]) bool {
 
 // renderTable aligns rows under a header. The header starts with 2 cells of
 // indent, matching the caller's mark in the list or huh's cursor in the picker;
-// lines are returned without it. With maxWidth > 0 the path, subject and branch
-// columns shrink, in that order, so every line fits. A spinner frame stands in
-// for the PR of each branch while the PRs load, and the PR column keeps at
-// least prWidth cells, so it doesn't widen when they arrive.
+// lines are returned without it. To fit maxWidth the path goes first, then
+// the commit's time, then its subject. A spinner frame stands in for the PR
+// of each branch while the PRs load, and the PR column keeps at least prWidth
+// cells, so it doesn't widen when they arrive.
 func renderTable(rows []row, maxWidth int, loading string, prWidth int) (string, []string) {
-	const colBranch, colPR, colSubject, colPath = 0, 2, 3, 5
+	const colBranch, colPR, colSubject = 0, 2, 3
 	titles := []string{"BRANCH", "CHANGES", "PR", "LAST COMMIT", "", "PATH"}
 	cells := make([][]string, len(rows))
 	for i, r := range rows {
@@ -1702,14 +1693,50 @@ func renderTable(rows []row, maxWidth int, loading string, prWidth int) (string,
 			grayStyle.Render(tilde(r.wt.path)),
 		}
 	}
-	return layoutTable(titles, cells, maxWidth, []shrinkStep{
-		{colPath, 24}, {colSubject, 30}, {colBranch, 20},
-		{colPath, 8}, {colSubject, 10}, {colBranch, 10},
-	}, map[int]int{colPR: prWidth})
+	tight := []shrinkStep{{colSubject, 30}, {colBranch, 20}, {colSubject, 10}, {colBranch, 10}}
+	return layoutFirstFit(titles, cells, maxWidth, map[int]int{colPR: prWidth}, []tableLayout{
+		{6, []shrinkStep{{colSubject, 30}, {colBranch, 20}}},
+		{5, tight},
+		{4, tight},
+		{3, tight},
+	})
 }
 
 // shrinkStep narrows column col down to min cells while the table is too wide.
 type shrinkStep struct{ col, min int }
+
+// tableLayout is a way to lay a table out: its first cols columns, narrowed
+// by the steps for them.
+type tableLayout struct {
+	cols   int
+	shrink []shrinkStep
+}
+
+// layoutFirstFit lays cells out the first of the ways that fits maxWidth, or
+// the last way when none does; with maxWidth <= 0, the first way, unshrunk.
+// The last column, the path, isn't shrunk but left out: worktrees under
+// wt.basedir share its prefix, so a shortened path doesn't tell them apart.
+func layoutFirstFit(titles []string, cells [][]string, maxWidth int, floors map[int]int, ways []tableLayout) (header string, lines []string) {
+	for _, w := range ways {
+		shown := make([][]string, len(cells))
+		for i, cs := range cells {
+			shown[i] = cs[:w.cols]
+		}
+		steps := slices.DeleteFunc(slices.Clone(w.shrink), func(s shrinkStep) bool { return s.col >= w.cols })
+		header, lines = layoutTable(titles[:w.cols], shown, maxWidth, steps, floors)
+		if maxWidth <= 0 || fits(header, lines, maxWidth) {
+			break
+		}
+	}
+	return header, lines
+}
+
+// fits reports whether layoutTable's header and lines fit maxWidth: the
+// header has its 2 cells of indent, the lines get theirs from the caller.
+func fits(header string, lines []string, maxWidth int) bool {
+	return ansi.StringWidth(header) <= maxWidth &&
+		!slices.ContainsFunc(lines, func(l string) bool { return ansi.StringWidth(l)+2 > maxWidth })
+}
 
 // layoutTable aligns cells under underlined titles. The header starts with 2
 // cells of indent, matching the caller's mark or huh's cursor; lines are
