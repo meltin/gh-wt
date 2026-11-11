@@ -200,6 +200,11 @@ func TestRenderTableFits(t *testing.T) {
 	if h, l := ansi.Strip(header), ansi.Strip(lines[0]); strings.Contains(h, "PATH") || strings.Contains(l, "/very/long") {
 		t.Errorf("the path should be left out in 100 cells:\n%s\n%s", h, l)
 	}
+	// With some more room, it shows with its parents cut to a letter.
+	header, lines = renderTable(rows, 140, "", 0)
+	if h, l := ansi.Strip(header), ansi.Strip(lines[0]); !strings.Contains(h, "PATH") || !strings.Contains(l, "/v/l/p/p/") || strings.Contains(l, "/very/long") || ansi.StringWidth(l)+2 > 140 {
+		t.Errorf("140 cells should show the short path:\n%s\n%s", h, l)
+	}
 	// Narrower still, the commit goes too, but the branch, its changes and its PR stay.
 	_, lines = renderTable(rows, 40, "", 0)
 	if l := ansi.Strip(lines[0]); ansi.StringWidth(l)+2 > 40 || !strings.Contains(l, "#1720") || strings.Contains(l, "31 hours") {
@@ -208,6 +213,20 @@ func TestRenderTableFits(t *testing.T) {
 	// Without a width to fit, as in a pipe, nothing is left out or shortened.
 	if _, lines = renderTable(rows, 0, "", 0); !strings.Contains(ansi.Strip(lines[0]), rows[0].wt.path) {
 		t.Errorf("the path should be whole without a width: %q", ansi.Strip(lines[0]))
+	}
+}
+
+func TestShortPath(t *testing.T) {
+	for p, want := range map[string]string{
+		"~/dev/worktrees/repo/feat-x": "~/d/w/r/feat-x",
+		"/r/.wt/feat/x":               "/r/.w/f/x",
+		"~/作業/repo":                   "~/作/repo",
+		"~":                           "~",
+		"repo":                        "repo",
+	} {
+		if got := shortPath(p); got != want {
+			t.Errorf("shortPath(%q) = %q, want %q", p, got, want)
+		}
 	}
 }
 
@@ -910,22 +929,18 @@ func TestRenderPRTableFits(t *testing.T) {
 		t.Errorf("draft PR should say so: %q", ansi.Strip(lines[0]))
 	}
 
-	// The worktree's path shows whole next to a title cut to 30 cells, and
-	// otherwise not at all, leaving the title the room it had without it.
+	// The worktree's path shows whole next to a title cut to 30 cells, then
+	// with its parents cut to a letter, and otherwise not at all, leaving the
+	// title the room it had without it.
 	path := "/worktrees/repo/fix/long-branch"
 	wts := []worktree{{path: path, branch: prs[0].HeadRefName}}
 	_, lines, _ = renderPRTable(prs, wts, worktree{}, prNames{def: "main"}, 140)
 	if l := ansi.Strip(lines[0]); !strings.Contains(l, path) || ansi.StringWidth(l)+2 > 140 {
 		t.Errorf("the path should show whole in 140 cells: %q", l)
 	}
-	// UPDATED makes room for it first,
 	header, lines, _ = renderPRTable(prs, wts, worktree{}, prNames{def: "main"}, 125)
-	if h, l := ansi.Strip(header), ansi.Strip(lines[0]); !strings.Contains(l, path) || strings.Contains(h, "UPDATED") || !strings.Contains(h, "AUTHOR") || ansi.StringWidth(h) > 125 || ansi.StringWidth(l)+2 > 125 {
-		t.Errorf("125 cells should leave UPDATED out for the path:\n%s\n%s", h, l)
-	}
-	// but not for the path of the current worktree, which can't be selected.
-	if header, _, _ = renderPRTable(prs, wts, wts[0], prNames{def: "main"}, 125); !strings.Contains(ansi.Strip(header), "UPDATED") {
-		t.Errorf("125 cells should keep UPDATED when only the current line has a path: %q", ansi.Strip(header))
+	if h, l := ansi.Strip(header), ansi.Strip(lines[0]); !strings.Contains(l, "/w/r/f/long-branch") || strings.Contains(l, path) || !strings.Contains(h, "UPDATED") || ansi.StringWidth(h) > 125 || ansi.StringWidth(l)+2 > 125 {
+		t.Errorf("125 cells should show the short path and keep UPDATED:\n%s\n%s", h, l)
 	}
 	header, lines, _ = renderPRTable(prs, wts, worktree{}, prNames{def: "main"}, 100)
 	if l := ansi.Strip(lines[0]); strings.Contains(l, "/worktrees") || !strings.Contains(l, "docs(e2e): GitHub") || ansi.StringWidth(l)+2 > 100 {

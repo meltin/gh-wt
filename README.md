@@ -96,7 +96,7 @@ gh wt only prints the path. To cd into it, add this to your .zshrc:
 | LAST COMMIT | Subject and relative time                                                                 |
 | PATH        | Worktree path, `~` for home                                                               |
 
-For a branch with an open PR, `↓` also counts commits pushed to the PR on GitHub that the worktree doesn't have yet, without fetching; `↓N` means there are such commits but they haven't been fetched, so they can't be counted. WT is `unknown` for a worktree whose status can't be read (a locked worktree on a volume that isn't mounted, for one). In the picker, the current worktree is shown grayed out under the header and cannot be selected. When a table is wider than the terminal, the commit subject and BRANCH are shortened, and PATH is left out unless it fits whole, since the worktrees' paths start alike; a narrower terminal leaves out the commit's time and then the commit as well.
+For a branch with an open PR, `↓` also counts commits pushed to the PR on GitHub that the worktree doesn't have yet, without fetching; `↓N` means there are such commits but they haven't been fetched, so they can't be counted. WT is `unknown` for a worktree whose status can't be read (a locked worktree on a volume that isn't mounted, for one). In the picker, the current worktree is shown grayed out under the header and cannot be selected. When a table is wider than the terminal, the commit subject and BRANCH are shortened, and PATH shows its parent directories cut to their first letter (`~/d/w/r/feat-x`) or, when that doesn't fit either, is left out; a narrower terminal leaves out the commit's time and then the commit as well.
 
 ## Creating worktrees
 
@@ -122,7 +122,7 @@ A target can be a branch name, a worktree directory name relative to the base di
 | UPDATED  | When the PR was last updated                                                    |
 | PATH     | Worktree path if it exists, `~` for home                                        |
 
-As in the worktree table, PATH is shown only whole; UPDATED is left out to make room for the path of a PR's worktree. When it still doesn't fit, PATH is left out, and a narrower terminal then leaves out UPDATED and AUTHOR, in that order, before TITLE gets shorter than 20 cells.
+PATH is shortened and left out as in the worktree table; a narrower terminal then leaves out UPDATED and AUTHOR, in that order, before TITLE gets shorter than 20 cells.
 
 `gh pr checkout --worktree` does the checkout, so the PR opens just as gh opens it: fetched first (plain `gh wt <branch>` doesn't fetch), tracking the PR's branch, an existing branch fast-forwarded (or refused when it can't be), and PRs from forks included; a URL of another repository's PR fetches that PR, as `gh pr checkout <url>` does. gh-wt picks the path under `wt.basedir` and, for a new worktree, copies files and runs `wt.hook`. A fork's PR whose branch is named like the default branch, or like a local branch that isn't that PR's, opens as `<owner>/<branch>`, so gh doesn't fast-forward your branch to it.
 
