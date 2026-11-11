@@ -10,8 +10,6 @@ Sleep 500ms
 Down
 Sleep 500ms
 Down
-Sleep 500ms
-Down
 Wait+Screen@20s /#14846/
 Sleep 2s
 Enter

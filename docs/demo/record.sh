@@ -16,13 +16,13 @@ if [ ! -d "$demo/cli" ]; then
   cd "$demo/cli"
   echo .wt >>.git/info/exclude
   git config user.name demo && git config user.email demo@example.com
-  for pr in 14845 14920 14846; do gh wt -p "$pr" >/dev/null; done # open, draft, open
+  for pr in 13400 14920 14846; do gh wt -p "$pr" >/dev/null; done # open, draft, open
   gh wt bagtoad/triage-ghmock-skill >/dev/null                     # merged PR's branch
   gh wt fix/pr-view-json-fields >/dev/null                         # no PR, local changes
   (cd .wt/fix/pr-view-json-fields &&
     echo '// TODO' >>pkg/cmd/pr/view/view.go && git commit -qam 'fix(pr view): keep requested JSON fields in order' &&
     echo '// more' >>pkg/cmd/pr/view/view.go && echo x >scratch.txt)
-  (cd .wt/babakks/skip-refresh-ro-lock && echo '// note' >>README.md && git add README.md)
+  (cd .wt/wm-uber-auth-schema && echo '// note' >>README.md && git add README.md)
   cd - >/dev/null
 fi
 
