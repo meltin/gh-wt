@@ -200,10 +200,13 @@ func TestRenderTableFits(t *testing.T) {
 	if h, l := ansi.Strip(header), ansi.Strip(lines[0]); strings.Contains(h, "PATH") || strings.Contains(l, "/very/long") {
 		t.Errorf("the path should be left out in 100 cells:\n%s\n%s", h, l)
 	}
-	// With some more room, it shows with its parents cut to a letter.
-	header, lines = renderTable(rows, 140, "", 0)
-	if h, l := ansi.Strip(header), ansi.Strip(lines[0]); !strings.Contains(h, "PATH") || !strings.Contains(l, "/v/l/p/p/") || strings.Contains(l, "/very/long") || ansi.StringWidth(l)+2 > 140 {
-		t.Errorf("140 cells should show the short path:\n%s\n%s", h, l)
+	// With some more room, it shows with its parents cut to a letter, cut at
+	// its end if need be.
+	for _, width := range []int{140, 120} {
+		header, lines = renderTable(rows, width, "", 0)
+		if h, l := ansi.Strip(header), ansi.Strip(lines[0]); !strings.Contains(h, "PATH") || !strings.Contains(l, "/v/l/p/p/") || strings.Contains(l, "/very/long") || ansi.StringWidth(l)+2 > width {
+			t.Errorf("%d cells should show the short path:\n%s\n%s", width, h, l)
+		}
 	}
 	// Narrower still, the commit goes too, but the branch, its changes and its PR stay.
 	_, lines = renderTable(rows, 40, "", 0)
@@ -930,17 +933,26 @@ func TestRenderPRTableFits(t *testing.T) {
 	}
 
 	// The worktree's path shows whole next to a title cut to 30 cells, then
-	// with its parents cut to a letter, and otherwise not at all, leaving the
-	// title the room it had without it.
-	path := "/worktrees/repo/fix/long-branch"
+	// with its parents cut to a letter, then cut at its end down to minPath
+	// cells, and otherwise not at all, leaving the title the room it had
+	// without it. UPDATED stays all along.
+	path := "/worktrees/repo/fix/long-branch-of-a-pr"
 	wts := []worktree{{path: path, branch: prs[0].HeadRefName}}
-	_, lines, _ = renderPRTable(prs, wts, worktree{}, prNames{def: "main"}, 140)
-	if l := ansi.Strip(lines[0]); !strings.Contains(l, path) || ansi.StringWidth(l)+2 > 140 {
-		t.Errorf("the path should show whole in 140 cells: %q", l)
-	}
-	header, lines, _ = renderPRTable(prs, wts, worktree{}, prNames{def: "main"}, 125)
-	if h, l := ansi.Strip(header), ansi.Strip(lines[0]); !strings.Contains(l, "/w/r/f/long-branch") || strings.Contains(l, path) || !strings.Contains(h, "UPDATED") || ansi.StringWidth(h) > 125 || ansi.StringWidth(l)+2 > 125 {
-		t.Errorf("125 cells should show the short path and keep UPDATED:\n%s\n%s", h, l)
+	for _, c := range []struct {
+		width int
+		shown string
+	}{
+		{140, path},
+		{130, "/w/r/f/long-branch-of-a-pr"},
+		{122, "/w/r/f/long-branch-of-…"},
+		{115, ""},
+	} {
+		header, lines, _ = renderPRTable(prs, wts, worktree{}, prNames{def: "main"}, c.width)
+		h, l := ansi.Strip(header), ansi.Strip(lines[0])
+		if !strings.Contains(h, "UPDATED") || ansi.StringWidth(h) > c.width || ansi.StringWidth(l)+2 > c.width ||
+			(c.shown == "") != !strings.Contains(h, "PATH") || !strings.Contains(l, c.shown) {
+			t.Errorf("%d cells should show the path as %q and keep UPDATED:\n%s\n%s", c.width, c.shown, h, l)
+		}
 	}
 	header, lines, _ = renderPRTable(prs, wts, worktree{}, prNames{def: "main"}, 100)
 	if l := ansi.Strip(lines[0]); strings.Contains(l, "/worktrees") || !strings.Contains(l, "docs(e2e): GitHub") || ansi.StringWidth(l)+2 > 100 {
