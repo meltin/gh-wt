@@ -53,7 +53,7 @@ gh-wt は [k1LoW/git-wt](https://github.com/k1LoW/git-wt) にならっていま�
 - 開いている PR があるブランチでは、PR に push されたのに worktree にまだないコミットも、fetch せずに `↓` に数えます。`↓N` は、そうしたコミットがあるものの、まだ fetch していないので数えられないことを表します。
 - 状態を読み取れない worktree では、CHANGES が `unknown` になります（ロックされていて、マウントされていないボリュームにある worktree など）。
 - 選択画面では、現在の worktree がヘッダーの下に灰色で表示され、選べません。
-- 表が端末より広いときは、PATH、コミットの件名、BRANCH の順に短くします。
+- 表が端末より広いときは、コミットの件名と BRANCH を短くします。worktree のパスはどれも先頭が同じで、短くすると見分けがつかないため、PATH は全部入るときだけ表示します。さらに狭いときは、コミットの時刻、件名の順に省きます。
 
 アイコンには [Nerd Fonts](https://www.nerdfonts.com/) を使っています。端末のフォントを Nerd Font にしてください。
 
@@ -112,6 +112,9 @@ $ gh wt -p 1720     # #1720、PR の URL、ブランチ名でも指定できる
 | BRANCH   | PR のブランチ                                                                |
 | AUTHOR   | PR の作成者                                                                  |
 | UPDATED  | PR が最後に更新された時刻                                                    |
+| PATH     | worktree があればそのパス。ホームは `~` で表示                               |
+
+worktree の一覧と同じく、PATH は全部入るときだけ表示します。さらに狭いときは、TITLE が 20 セルより短くなる前に、UPDATED、AUTHOR の順に省きます。
 
 チェックアウトは `gh pr checkout --worktree` で行うので、PR は gh で開いたときと同じ状態で開きます。
 
