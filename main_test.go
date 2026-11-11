@@ -885,13 +885,25 @@ func TestRenderPRTableFits(t *testing.T) {
 	}}
 	prs[0].Author.Login = "someone"
 	header, lines, _ := renderPRTable(prs, nil, worktree{}, prNames{def: "main"}, 100)
-	for _, l := range append(lines, header) {
+	if w := ansi.StringWidth(header); w > 100 { // its indent is in it already
+		t.Errorf("header width %d > 100: %q", w, ansi.Strip(header))
+	}
+	for _, l := range lines {
 		if w := ansi.StringWidth(l) + 2; w > 100 {
 			t.Errorf("width %d > 100: %q", w, ansi.Strip(l))
 		}
 	}
 	if !strings.Contains(ansi.Strip(lines[0]), "#1720 draft") {
 		t.Errorf("draft PR should say so: %q", ansi.Strip(lines[0]))
+	}
+
+	// The worktree's path shrinks after the title and the branch: worktrees
+	// under wt.basedir share its prefix, so its end is what tells them apart.
+	path := "/worktrees/repo/fix/long-branch"
+	wts := []worktree{{path: path, branch: prs[0].HeadRefName}}
+	_, lines, _ = renderPRTable(prs, wts, worktree{}, prNames{def: "main"}, 140)
+	if l := ansi.Strip(lines[0]); !strings.Contains(l, path) || ansi.StringWidth(l)+2 > 140 {
+		t.Errorf("the path should show whole in 140 cells: %q", l)
 	}
 }
 
@@ -924,8 +936,8 @@ func TestCurrentWorktreeIsUnderHeader(t *testing.T) {
 	if len(lines) != 2 || !slices.Equal(current, []bool{false, true}) {
 		t.Fatalf("lines = %q, current = %v", lines, current)
 	}
-	if l := ansi.Strip(lines[1]); !strings.Contains(l, "?1") || !strings.Contains(l, "here") {
-		t.Errorf("the branch's line should show it and its untracked file: %q", l)
+	if l := ansi.Strip(lines[1]); !strings.Contains(l, "?1") || !strings.Contains(l, "here") || !strings.Contains(l, tilde(repo)) {
+		t.Errorf("the branch's line should show it, its untracked file and its path: %q", l)
 	}
 	description, options := prOptions(header, lines, current)
 	if !strings.Contains(ansi.Strip(description), "here") {

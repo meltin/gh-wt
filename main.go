@@ -586,14 +586,14 @@ func prCells(prs []pullRequest, wts []worktree, here worktree, names prNames) (c
 	cells = make([][]string, len(prs))
 	current = make([]bool, len(prs))
 	for i, pr := range prs {
-		changes := ""
+		changes, path := "", ""
 		name := names.branch(pr)
 		current[i] = name == here.branch
 		if j := slices.IndexFunc(wts, func(wt worktree) bool { return wt.branch == name }); j >= 0 {
 			s := worktreeStatus(wts[j].path)
 			n, known := prBehind(wts[j].path, pr.HeadRefOid)
 			s.behind, s.remoteNew = max(s.behind, n), !known
-			changes = statusCell(s)
+			changes, path = statusCell(s), grayStyle.Render(tilde(wts[j].path))
 		}
 		number := greenStyle.Render(fmt.Sprintf("#%d", pr.Number))
 		if pr.IsDraft {
@@ -606,21 +606,25 @@ func prCells(prs []pullRequest, wts []worktree, here worktree, names prNames) (c
 			ansi.Truncate(cyanStyle.Render(iconBranch+" "+pr.HeadRefName), 28, "…"),
 			grayStyle.Render(pr.Author.Login),
 			grayStyle.Render(humanize.Time(pr.UpdatedAt)),
+			path,
 		}
 	}
 	if here.path != "" && !slices.Contains(current, true) {
-		cells = append(cells, []string{statusCell(worktreeStatus(here.path)), "", "", ansi.Truncate(branchCell(here), 28, "…"), "", ""})
+		cells = append(cells, []string{statusCell(worktreeStatus(here.path)), "", "", ansi.Truncate(branchCell(here), 28, "…"), "", "", grayStyle.Render(tilde(here.path))})
 		current = append(current, true)
 	}
 	return cells, current
 }
 
-// layoutPRTable aligns prCells' lines; with maxWidth > 0 the title and the
-// branch shrink so every line fits.
+// layoutPRTable aligns prCells' lines; with maxWidth > 0 the title, the branch
+// and the path shrink so every line fits. The path goes last: worktrees under
+// wt.basedir share its prefix, so shortening a path cuts the part that tells
+// them apart.
 func layoutPRTable(cells [][]string, maxWidth int) (header string, lines []string) {
-	const colTitle, colBranch = 2, 3
-	return layoutTable([]string{"WORKTREE", "PR", "TITLE", "BRANCH", "AUTHOR", "UPDATED"}, cells, maxWidth, []shrinkStep{
-		{colTitle, 30}, {colBranch, 20}, {colTitle, 10}, {colBranch, 10},
+	const colTitle, colBranch, colPath = 2, 3, 6
+	return layoutTable([]string{"WORKTREE", "PR", "TITLE", "BRANCH", "AUTHOR", "UPDATED", "PATH"}, cells, maxWidth, []shrinkStep{
+		{colTitle, 30}, {colBranch, 20}, {colPath, 24},
+		{colTitle, 10}, {colBranch, 10}, {colPath, 8},
 	}, nil)
 }
 
