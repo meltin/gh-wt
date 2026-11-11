@@ -122,7 +122,7 @@ A target can be a branch name, a worktree directory name relative to the base di
 | UPDATED  | When the PR was last updated                                                    |
 | PATH     | Worktree path if it exists, `~` for home                                        |
 
-As in the worktree table, PATH is shown only whole; UPDATED is left out to make room for it. When it still doesn't fit, PATH is left out, and a narrower terminal then leaves out UPDATED and AUTHOR, in that order, before TITLE gets shorter than 20 cells.
+As in the worktree table, PATH is shown only whole; UPDATED is left out to make room for the path of a PR's worktree. When it still doesn't fit, PATH is left out, and a narrower terminal then leaves out UPDATED and AUTHOR, in that order, before TITLE gets shorter than 20 cells.
 
 `gh pr checkout --worktree` does the checkout, so the PR opens just as gh opens it: fetched first (plain `gh wt <branch>` doesn't fetch), tracking the PR's branch, an existing branch fast-forwarded (or refused when it can't be), and PRs from forks included; a URL of another repository's PR fetches that PR, as `gh pr checkout <url>` does. gh-wt picks the path under `wt.basedir` and, for a new worktree, copies files and runs `wt.hook`. A fork's PR whose branch is named like the default branch, or like a local branch that isn't that PR's, opens as `<owner>/<branch>`, so gh doesn't fast-forward your branch to it.
 

@@ -923,6 +923,10 @@ func TestRenderPRTableFits(t *testing.T) {
 	if h, l := ansi.Strip(header), ansi.Strip(lines[0]); !strings.Contains(l, path) || strings.Contains(h, "UPDATED") || !strings.Contains(h, "AUTHOR") || ansi.StringWidth(h) > 125 || ansi.StringWidth(l)+2 > 125 {
 		t.Errorf("125 cells should leave UPDATED out for the path:\n%s\n%s", h, l)
 	}
+	// but not for the path of the current worktree, which can't be selected.
+	if header, _, _ = renderPRTable(prs, wts, wts[0], prNames{def: "main"}, 125); !strings.Contains(ansi.Strip(header), "UPDATED") {
+		t.Errorf("125 cells should keep UPDATED when only the current line has a path: %q", ansi.Strip(header))
+	}
 	header, lines, _ = renderPRTable(prs, wts, worktree{}, prNames{def: "main"}, 100)
 	if l := ansi.Strip(lines[0]); strings.Contains(l, "/worktrees") || !strings.Contains(l, "docs(e2e): GitHub") || ansi.StringWidth(l)+2 > 100 {
 		t.Errorf("the path should give way to the title in 100 cells: %q", l)

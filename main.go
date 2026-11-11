@@ -575,7 +575,7 @@ func selectPR() {
 // current marks the lines of here's branch.
 func renderPRTable(prs []pullRequest, wts []worktree, here worktree, names prNames, maxWidth int) (header string, lines []string, current []bool) {
 	cells, current := prCells(prs, wts, here, names)
-	header, lines = layoutPRTable(cells, maxWidth)
+	header, lines = layoutPRTable(cells, current, maxWidth)
 	return header, lines, current
 }
 
@@ -617,19 +617,27 @@ func prCells(prs []pullRequest, wts []worktree, here worktree, names prNames) (c
 }
 
 // layoutPRTable aligns prCells' lines to fit maxWidth. UPDATED goes to make
-// room for PATH, then PATH goes, then UPDATED and AUTHOR before the title,
-// which tells the PRs apart, gets shorter than 20 cells.
-func layoutPRTable(cells [][]string, maxWidth int) (header string, lines []string) {
-	const colTitle, colBranch = 2, 3
+// room for the path of a PR's worktree, then PATH goes, then UPDATED and
+// AUTHOR before the title, which tells the PRs apart, gets shorter than 20
+// cells. current marks the lines that can't be selected: the current
+// worktree's path alone isn't worth UPDATED.
+func layoutPRTable(cells [][]string, current []bool, maxWidth int) (header string, lines []string) {
+	const colTitle, colBranch, colPath = 2, 3, 6
 	roomy := []shrinkStep{{colTitle, 30}, {colBranch, 20}}
 	keepTitle := []shrinkStep{{colTitle, 30}, {colBranch, 20}, {colTitle, 20}}
-	return layoutFirstFit([]string{"WT", "PR", "TITLE", "BRANCH", "AUTHOR", "UPDATED", "PATH"}, cells, maxWidth, nil, []tableLayout{
-		{[]int{0, 1, 2, 3, 4, 5, 6}, roomy},
-		{[]int{0, 1, 2, 3, 4, 6}, roomy},
-		{[]int{0, 1, 2, 3, 4, 5}, keepTitle},
-		{[]int{0, 1, 2, 3, 4}, keepTitle},
-		{[]int{0, 1, 2, 3}, []shrinkStep{{colTitle, 30}, {colBranch, 20}, {colTitle, 10}, {colBranch, 10}}},
-	})
+	ways := []tableLayout{{[]int{0, 1, 2, 3, 4, 5, 6}, roomy}}
+	for i, cs := range cells {
+		if !current[i] && cs[colPath] != "" {
+			ways = append(ways, tableLayout{[]int{0, 1, 2, 3, 4, 6}, roomy})
+			break
+		}
+	}
+	ways = append(ways,
+		tableLayout{[]int{0, 1, 2, 3, 4, 5}, keepTitle},
+		tableLayout{[]int{0, 1, 2, 3, 4}, keepTitle},
+		tableLayout{[]int{0, 1, 2, 3}, []shrinkStep{{colTitle, 30}, {colBranch, 20}, {colTitle, 10}, {colBranch, 10}}},
+	)
+	return layoutFirstFit([]string{"WT", "PR", "TITLE", "BRANCH", "AUTHOR", "UPDATED", "PATH"}, cells, maxWidth, nil, ways)
 }
 
 // prPicker runs the PR select and lays its table out again when the terminal
@@ -656,7 +664,7 @@ func newPRPicker(cells [][]string, current []bool, width int, selected *int) *pr
 
 // lay lays the table out for the current width.
 func (p *prPicker) lay() (string, []string, []bool) {
-	header, lines := layoutPRTable(p.cells, p.width)
+	header, lines := layoutPRTable(p.cells, p.current, p.width)
 	p.laid = p.width
 	return header, lines, p.current
 }
