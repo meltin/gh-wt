@@ -897,13 +897,20 @@ func TestRenderPRTableFits(t *testing.T) {
 		t.Errorf("draft PR should say so: %q", ansi.Strip(lines[0]))
 	}
 
-	// The worktree's path shrinks after the title and the branch: worktrees
-	// under wt.basedir share its prefix, so its end is what tells them apart.
+	// The worktree's path shows whole next to a title cut to 30 cells, and
+	// otherwise not at all, leaving the title the room it had without it.
 	path := "/worktrees/repo/fix/long-branch"
 	wts := []worktree{{path: path, branch: prs[0].HeadRefName}}
 	_, lines, _ = renderPRTable(prs, wts, worktree{}, prNames{def: "main"}, 140)
 	if l := ansi.Strip(lines[0]); !strings.Contains(l, path) || ansi.StringWidth(l)+2 > 140 {
 		t.Errorf("the path should show whole in 140 cells: %q", l)
+	}
+	header, lines, _ = renderPRTable(prs, wts, worktree{}, prNames{def: "main"}, 100)
+	if l := ansi.Strip(lines[0]); strings.Contains(l, "/worktrees") || !strings.Contains(l, "docs(e2e): GitHub") || ansi.StringWidth(l)+2 > 100 {
+		t.Errorf("the path should give way to the title in 100 cells: %q", l)
+	}
+	if h := ansi.Strip(header); strings.Contains(h, "PATH") || ansi.StringWidth(h) > 100 {
+		t.Errorf("the header should leave PATH out: %q", h)
 	}
 }
 

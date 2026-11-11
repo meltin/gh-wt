@@ -616,15 +616,26 @@ func prCells(prs []pullRequest, wts []worktree, here worktree, names prNames) (c
 	return cells, current
 }
 
-// layoutPRTable aligns prCells' lines; with maxWidth > 0 the title, the branch
-// and the path shrink so every line fits. The path goes last: worktrees under
-// wt.basedir share its prefix, so shortening a path cuts the part that tells
-// them apart.
+// layoutPRTable aligns prCells' lines; with maxWidth > 0 the title and the
+// branch shrink so every line fits. The path is shown whole or not at all:
+// worktrees under wt.basedir share its prefix, so a shortened path doesn't
+// tell them apart. It is left out when it doesn't fit next to a title and a
+// branch cut to 30 and 20 cells.
 func layoutPRTable(cells [][]string, maxWidth int) (header string, lines []string) {
 	const colTitle, colBranch, colPath = 2, 3, 6
-	return layoutTable([]string{"WORKTREE", "PR", "TITLE", "BRANCH", "AUTHOR", "UPDATED", "PATH"}, cells, maxWidth, []shrinkStep{
-		{colTitle, 30}, {colBranch, 20}, {colPath, 24},
-		{colTitle, 10}, {colBranch, 10}, {colPath, 8},
+	titles := []string{"WORKTREE", "PR", "TITLE", "BRANCH", "AUTHOR", "UPDATED", "PATH"}
+	header, lines = layoutTable(titles, cells, maxWidth, []shrinkStep{{colTitle, 30}, {colBranch, 20}}, nil)
+	fits := ansi.StringWidth(header) <= maxWidth && // the header has its indent, the lines don't
+		!slices.ContainsFunc(lines, func(l string) bool { return ansi.StringWidth(l)+2 > maxWidth })
+	if maxWidth <= 0 || fits {
+		return header, lines
+	}
+	withoutPath := make([][]string, len(cells))
+	for i, cs := range cells {
+		withoutPath[i] = cs[:colPath]
+	}
+	return layoutTable(titles[:colPath], withoutPath, maxWidth, []shrinkStep{
+		{colTitle, 30}, {colBranch, 20}, {colTitle, 10}, {colBranch, 10},
 	}, nil)
 }
 
