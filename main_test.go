@@ -918,6 +918,11 @@ func TestRenderPRTableFits(t *testing.T) {
 	if l := ansi.Strip(lines[0]); !strings.Contains(l, path) || ansi.StringWidth(l)+2 > 140 {
 		t.Errorf("the path should show whole in 140 cells: %q", l)
 	}
+	// UPDATED makes room for it first,
+	header, lines, _ = renderPRTable(prs, wts, worktree{}, prNames{def: "main"}, 125)
+	if h, l := ansi.Strip(header), ansi.Strip(lines[0]); !strings.Contains(l, path) || strings.Contains(h, "UPDATED") || !strings.Contains(h, "AUTHOR") || ansi.StringWidth(h) > 125 || ansi.StringWidth(l)+2 > 125 {
+		t.Errorf("125 cells should leave UPDATED out for the path:\n%s\n%s", h, l)
+	}
 	header, lines, _ = renderPRTable(prs, wts, worktree{}, prNames{def: "main"}, 100)
 	if l := ansi.Strip(lines[0]); strings.Contains(l, "/worktrees") || !strings.Contains(l, "docs(e2e): GitHub") || ansi.StringWidth(l)+2 > 100 {
 		t.Errorf("the path should give way to the title in 100 cells: %q", l)

@@ -616,17 +616,19 @@ func prCells(prs []pullRequest, wts []worktree, here worktree, names prNames) (c
 	return cells, current
 }
 
-// layoutPRTable aligns prCells' lines to fit maxWidth. PATH goes first, then
-// UPDATED and AUTHOR, before the title, which tells the PRs apart, gets
-// shorter than 20 cells.
+// layoutPRTable aligns prCells' lines to fit maxWidth. UPDATED goes to make
+// room for PATH, then PATH goes, then UPDATED and AUTHOR before the title,
+// which tells the PRs apart, gets shorter than 20 cells.
 func layoutPRTable(cells [][]string, maxWidth int) (header string, lines []string) {
 	const colTitle, colBranch = 2, 3
+	roomy := []shrinkStep{{colTitle, 30}, {colBranch, 20}}
 	keepTitle := []shrinkStep{{colTitle, 30}, {colBranch, 20}, {colTitle, 20}}
 	return layoutFirstFit([]string{"WORKTREE", "PR", "TITLE", "BRANCH", "AUTHOR", "UPDATED", "PATH"}, cells, maxWidth, nil, []tableLayout{
-		{7, []shrinkStep{{colTitle, 30}, {colBranch, 20}}},
-		{6, keepTitle},
-		{5, keepTitle},
-		{4, []shrinkStep{{colTitle, 30}, {colBranch, 20}, {colTitle, 10}, {colBranch, 10}}},
+		{[]int{0, 1, 2, 3, 4, 5, 6}, roomy},
+		{[]int{0, 1, 2, 3, 4, 6}, roomy},
+		{[]int{0, 1, 2, 3, 4, 5}, keepTitle},
+		{[]int{0, 1, 2, 3, 4}, keepTitle},
+		{[]int{0, 1, 2, 3}, []shrinkStep{{colTitle, 30}, {colBranch, 20}, {colTitle, 10}, {colBranch, 10}}},
 	})
 }
 
@@ -1695,35 +1697,54 @@ func renderTable(rows []row, maxWidth int, loading string, prWidth int) (string,
 	}
 	tight := []shrinkStep{{colSubject, 30}, {colBranch, 20}, {colSubject, 10}, {colBranch, 10}}
 	return layoutFirstFit(titles, cells, maxWidth, map[int]int{colPR: prWidth}, []tableLayout{
-		{6, []shrinkStep{{colSubject, 30}, {colBranch, 20}}},
-		{5, tight},
-		{4, tight},
-		{3, tight},
+		{[]int{0, 1, 2, 3, 4, 5}, []shrinkStep{{colSubject, 30}, {colBranch, 20}}},
+		{[]int{0, 1, 2, 3, 4}, tight},
+		{[]int{0, 1, 2, 3}, tight},
+		{[]int{0, 1, 2}, tight},
 	})
 }
 
 // shrinkStep narrows column col down to min cells while the table is too wide.
 type shrinkStep struct{ col, min int }
 
-// tableLayout is a way to lay a table out: its first cols columns, narrowed
-// by the steps for them.
+// tableLayout is a way to lay a table out: the columns shown, in order, and
+// the steps that narrow them. Columns are counted as in the full table.
 type tableLayout struct {
-	cols   int
+	cols   []int
 	shrink []shrinkStep
 }
 
 // layoutFirstFit lays cells out the first of the ways that fits maxWidth, or
 // the last way when none does; with maxWidth <= 0, the first way, unshrunk.
-// The last column, the path, isn't shrunk but left out: worktrees under
-// wt.basedir share its prefix, so a shortened path doesn't tell them apart.
+// The path isn't shrunk but left out: worktrees under wt.basedir share its
+// prefix, so a shortened path doesn't tell them apart.
 func layoutFirstFit(titles []string, cells [][]string, maxWidth int, floors map[int]int, ways []tableLayout) (header string, lines []string) {
 	for _, w := range ways {
+		at := make(map[int]int, len(w.cols)) // a column's place in this way
+		shownTitles := make([]string, len(w.cols))
+		for j, c := range w.cols {
+			at[c], shownTitles[j] = j, titles[c]
+		}
 		shown := make([][]string, len(cells))
 		for i, cs := range cells {
-			shown[i] = cs[:w.cols]
+			shown[i] = make([]string, len(w.cols))
+			for j, c := range w.cols {
+				shown[i][j] = cs[c]
+			}
 		}
-		steps := slices.DeleteFunc(slices.Clone(w.shrink), func(s shrinkStep) bool { return s.col >= w.cols })
-		header, lines = layoutTable(titles[:w.cols], shown, maxWidth, steps, floors)
+		var steps []shrinkStep
+		for _, s := range w.shrink {
+			if j, ok := at[s.col]; ok {
+				steps = append(steps, shrinkStep{j, s.min})
+			}
+		}
+		shownFloors := make(map[int]int, len(floors))
+		for c, f := range floors {
+			if j, ok := at[c]; ok {
+				shownFloors[j] = f
+			}
+		}
+		header, lines = layoutTable(shownTitles, shown, maxWidth, steps, shownFloors)
 		if maxWidth <= 0 || fits(header, lines, maxWidth) {
 			break
 		}
