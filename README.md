@@ -53,7 +53,7 @@ gh-wt follows [k1LoW/git-wt](https://github.com/k1LoW/git-wt): the same target r
 - For a branch with an open PR, `↓` also counts commits pushed to the PR that the worktree doesn't have yet, without fetching. `↓N` means there are such commits, but they haven't been fetched, so they can't be counted.
 - WT is `unknown` for a worktree whose status can't be read (a locked worktree on a volume that isn't mounted, for one).
 - In the picker, the current worktree is shown grayed out under the header and can't be selected.
-- When the table is wider than the terminal, the commit subject and BRANCH are shortened, and PATH is left out unless it fits whole, since the worktrees' paths start alike. A narrower terminal leaves out the commit's time and then the commit as well.
+- When the table is wider than the terminal, the commit subject and BRANCH are shortened. PATH shows its parent directories cut to their first letter (`~/d/w/r/feat-x`), then is cut at its end down to 20 cells, and is left out when even that doesn't fit. A narrower terminal leaves out the commit's time and then the commit as well.
 
 Icons use [Nerd Fonts](https://www.nerdfonts.com/), so set a Nerd Font in your terminal.
 
@@ -114,7 +114,7 @@ $ gh wt -p 1720     # or #1720, the PR's URL, or its branch
 | UPDATED  | When the PR was last updated                                                 |
 | PATH     | Worktree path if it exists, `~` for home                                     |
 
-As in the worktree table, PATH is shown only whole; UPDATED is left out to make room for the path of a PR's worktree. When it still doesn't fit, PATH is left out, and a narrower terminal then leaves out UPDATED and AUTHOR, in that order, before TITLE gets shorter than 20 cells.
+PATH is shortened and left out as in the worktree table; a narrower terminal then leaves out UPDATED and AUTHOR, in that order, before TITLE gets shorter than 20 cells.
 
 The checkout is `gh pr checkout --worktree`, so the PR opens just as gh opens it:
 
