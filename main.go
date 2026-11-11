@@ -569,7 +569,7 @@ func selectPR() {
 	checkoutPR(strconv.Itoa(prs[selected].Number), prs[selected], names)
 }
 
-// renderPRTable lays out PRs with the worktree's CHANGES when one exists, so
+// renderPRTable lays out PRs with the worktree's changes when one exists, so
 // it's clear whether selecting moves to it or creates it. When no PR is on the
 // current worktree here's branch, it gets a line of its own after the PRs'.
 // current marks the lines of here's branch.
@@ -623,7 +623,7 @@ func layoutPRTable(cells [][]string, maxWidth int) (header string, lines []strin
 	const colTitle, colBranch = 2, 3
 	roomy := []shrinkStep{{colTitle, 30}, {colBranch, 20}}
 	keepTitle := []shrinkStep{{colTitle, 30}, {colBranch, 20}, {colTitle, 20}}
-	return layoutFirstFit([]string{"WORKTREE", "PR", "TITLE", "BRANCH", "AUTHOR", "UPDATED", "PATH"}, cells, maxWidth, nil, []tableLayout{
+	return layoutFirstFit([]string{"WT", "PR", "TITLE", "BRANCH", "AUTHOR", "UPDATED", "PATH"}, cells, maxWidth, nil, []tableLayout{
 		{[]int{0, 1, 2, 3, 4, 5, 6}, roomy},
 		{[]int{0, 1, 2, 3, 4, 6}, roomy},
 		{[]int{0, 1, 2, 3, 4, 5}, keepTitle},
@@ -1679,7 +1679,7 @@ func filtering[T comparable](s *huh.Select[T]) bool {
 // cells, so it doesn't widen when they arrive.
 func renderTable(rows []row, maxWidth int, loading string, prWidth int) (string, []string) {
 	const colBranch, colPR, colSubject = 0, 2, 3
-	titles := []string{"BRANCH", "CHANGES", "PR", "LAST COMMIT", "", "PATH"}
+	titles := []string{"BRANCH", "WT", "PR", "LAST COMMIT", "", "PATH"}
 	cells := make([][]string, len(rows))
 	for i, r := range rows {
 		pr := prCell(r.pr)

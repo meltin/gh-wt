@@ -91,12 +91,12 @@ gh wt only prints the path. To cd into it, add this to your .zshrc:
 | Column      | Content                                                                                   |
 | ----------- | ----------------------------------------------------------------------------------------- |
 | BRANCH      | Branch name (up to 26 cells), or `(detached)`                                             |
-| CHANGES     | `↑` ahead / `↓` behind upstream, `!` conflicts, `+` staged, `~` modified, `?` untracked     |
+| WT          | `↑` ahead / `↓` behind upstream, `!` conflicts, `+` staged, `~` modified, `?` untracked     |
 | PR          | Number and state (open / draft / merged / closed) of the branch's open PR, else its newest |
 | LAST COMMIT | Subject and relative time                                                                 |
 | PATH        | Worktree path, `~` for home                                                               |
 
-For a branch with an open PR, `↓` also counts commits pushed to the PR on GitHub that the worktree doesn't have yet, without fetching; `↓N` means there are such commits but they haven't been fetched, so they can't be counted. CHANGES is `unknown` for a worktree whose status can't be read (a locked worktree on a volume that isn't mounted, for one). In the picker, the current worktree is shown grayed out under the header and cannot be selected. When a table is wider than the terminal, the commit subject and BRANCH are shortened, and PATH is left out unless it fits whole, since the worktrees' paths start alike; a narrower terminal leaves out the commit's time and then the commit as well.
+For a branch with an open PR, `↓` also counts commits pushed to the PR on GitHub that the worktree doesn't have yet, without fetching; `↓N` means there are such commits but they haven't been fetched, so they can't be counted. WT is `unknown` for a worktree whose status can't be read (a locked worktree on a volume that isn't mounted, for one). In the picker, the current worktree is shown grayed out under the header and cannot be selected. When a table is wider than the terminal, the commit subject and BRANCH are shortened, and PATH is left out unless it fits whole, since the worktrees' paths start alike; a narrower terminal leaves out the commit's time and then the commit as well.
 
 ## Creating worktrees
 
@@ -114,7 +114,7 @@ A target can be a branch name, a worktree directory name relative to the base di
 
 | Column   | Content                                                                         |
 | -------- | ------------------------------------------------------------------------------- |
-| WORKTREE | The worktree's CHANGES if it exists (selecting moves there); empty otherwise     |
+| WT       | The worktree's changes, as in `gh wt`, if it exists (selecting moves there)     |
 | PR       | Number, green for open and yellow `draft` for drafts                            |
 | TITLE    | PR title, shortened first when the table is wider than the terminal            |
 | BRANCH   | Head branch                                                                     |
