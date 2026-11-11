@@ -44,14 +44,14 @@ gh-wt follows [k1LoW/git-wt](https://github.com/k1LoW/git-wt): the same target r
 | Column      | Content                                                                                 |
 | ----------- | --------------------------------------------------------------------------------------- |
 | BRANCH      | Branch name (up to 26 cells), or `(detached)`                                           |
-| WT          | `↑` ahead / `↓` behind upstream, `!` conflicts, `+` staged, `~` modified, `?` untracked |
+| (changes)   | `↑` ahead / `↓` behind upstream, `!` conflicts, `+` staged, `~` modified, `?` untracked |
 | PR          | Number and state (open / draft / merged / closed) of the branch's PR, an open one first |
 | LAST COMMIT | Subject and relative time                                                               |
 | PATH        | Worktree path, `~` for home                                                             |
 
 - The table appears as soon as git has read the worktrees. The PR column shows a spinner until `gh` answers, then fills in without moving the other columns, and you can move or pick in the meantime. Piped, `gh wt -l` waits and prints once.
 - For a branch with an open PR, `↓` also counts commits pushed to the PR that the worktree doesn't have yet, without fetching. `↓N` means there are such commits, but they haven't been fetched, so they can't be counted.
-- WT is `unknown` for a worktree whose status can't be read (a locked worktree on a volume that isn't mounted, for one).
+- The changes follow the branch name without a title of their own, and show nothing for a clean worktree. They read `unknown` for a worktree whose status can't be read (a locked worktree on a volume that isn't mounted, for one).
 - In the picker, the current worktree is shown grayed out under the header and can't be selected.
 - When the table is wider than the terminal, the commit subject and BRANCH are shortened. PATH shows its parent directories cut to their first letter (`~/d/w/r/feat-x`), then is cut at its end down to 20 cells, and is left out when even that doesn't fit. A narrower terminal leaves out the commit's time and then the commit as well.
 
@@ -106,13 +106,12 @@ $ gh wt -p 1720     # or #1720, the PR's URL, or its branch
 
 | Column   | Content                                                                      |
 | -------- | ---------------------------------------------------------------------------- |
-| WT       | The worktree's changes, as in `gh wt`, if it exists (selecting moves there)  |
 | PR       | Number, green for open and yellow `draft` for drafts                         |
 | TITLE    | PR title, shortened first when the table is wider than the terminal          |
-| BRANCH   | Head branch                                                                  |
+| BRANCH   | Head branch, followed by its worktree's changes as in `gh wt`                |
 | AUTHOR   | PR author                                                                    |
 | UPDATED  | When the PR was last updated                                                 |
-| PATH     | Worktree path if it exists, `~` for home                                     |
+| PATH     | Worktree path if it exists (selecting moves there), `~` for home             |
 
 PATH is shortened and left out as in the worktree table; a narrower terminal then leaves out UPDATED and AUTHOR, in that order, before TITLE gets shorter than 20 cells.
 
