@@ -95,7 +95,6 @@ const (
 	iconBranch   = ""
 	iconCommit   = ""
 	iconCurrent  = ""
-	iconClean    = ""
 	iconPROpen   = ""
 	iconPRDraft  = ""
 	iconPRMerged = ""
@@ -569,10 +568,10 @@ func selectPR() {
 	checkoutPR(strconv.Itoa(prs[selected].Number), prs[selected], names)
 }
 
-// renderPRTable lays out PRs with the worktree's changes when one exists, so
-// it's clear whether selecting moves to it or creates it. When no PR is on the
-// current worktree here's branch, it gets a line of its own after the PRs'.
-// current marks the lines of here's branch.
+// renderPRTable lays out PRs with the worktree's changes and path when one
+// exists, so it's clear whether selecting moves to it or creates it. When no
+// PR is on the current worktree here's branch, it gets a line of its own after
+// the PRs'. current marks the lines of here's branch.
 func renderPRTable(prs []pullRequest, wts []worktree, here worktree, names prNames, maxWidth int) (header string, lines []string, current []bool) {
 	cells, current := prCells(prs, wts, here, names)
 	header, lines = layoutPRTable(cells, maxWidth)
@@ -600,10 +599,10 @@ func prCells(prs []pullRequest, wts []worktree, here worktree, names prNames) (c
 			number = yellowStyle.Render(fmt.Sprintf("#%d draft", pr.Number))
 		}
 		cells[i] = []string{
-			changes,
 			number,
 			pr.Title,
 			ansi.Truncate(cyanStyle.Render(iconBranch+" "+pr.HeadRefName), 28, "…"),
+			changes,
 			grayStyle.Render(pr.Author.Login),
 			grayStyle.Render(humanize.Time(pr.UpdatedAt)),
 			path,
@@ -611,20 +610,21 @@ func prCells(prs []pullRequest, wts []worktree, here worktree, names prNames) (c
 		}
 	}
 	if here.path != "" && !slices.Contains(current, true) {
-		cells = append(cells, []string{statusCell(worktreeStatus(here.path)), "", "", ansi.Truncate(branchCell(here), 28, "…"), "", "", grayStyle.Render(tilde(here.path)), grayStyle.Render(shortPath(tilde(here.path)))})
+		cells = append(cells, []string{"", "", ansi.Truncate(branchCell(here), 28, "…"), statusCell(worktreeStatus(here.path)), "", "", grayStyle.Render(tilde(here.path)), grayStyle.Render(shortPath(tilde(here.path)))})
 		current = append(current, true)
 	}
 	return cells, current
 }
 
-// layoutPRTable aligns prCells' lines to fit maxWidth. PATH is shortened, as
+// layoutPRTable aligns prCells' lines to fit maxWidth. The worktree's changes
+// follow the branch, untitled, as in a shell prompt. PATH is shortened, as
 // layoutFirstFit says, then left out; then UPDATED and AUTHOR go before the
 // title, which tells the PRs apart, gets shorter than 20 cells.
 func layoutPRTable(cells [][]string, maxWidth int) (header string, lines []string) {
-	const colTitle, colBranch, colShortPath = 2, 3, 7
+	const colTitle, colBranch, colShortPath = 1, 2, 7
 	roomy := []shrinkStep{{colTitle, 30}, {colBranch, 20}}
 	keepTitle := []shrinkStep{{colTitle, 30}, {colBranch, 20}, {colTitle, 20}}
-	return layoutFirstFit([]string{"WT", "PR", "TITLE", "BRANCH", "AUTHOR", "UPDATED", "PATH", "PATH"}, cells, maxWidth, nil, []tableLayout{
+	return layoutFirstFit([]string{"PR", "TITLE", "BRANCH", "", "AUTHOR", "UPDATED", "PATH", "PATH"}, cells, maxWidth, nil, []tableLayout{
 		{[]int{0, 1, 2, 3, 4, 5, 6}, roomy},
 		{[]int{0, 1, 2, 3, 4, 5, 7}, slices.Concat(roomy, []shrinkStep{{colShortPath, minPath}})},
 		{[]int{0, 1, 2, 3, 4, 5}, keepTitle},
@@ -1681,7 +1681,7 @@ func filtering[T comparable](s *huh.Select[T]) bool {
 // when they arrive.
 func renderTable(rows []row, maxWidth int, loading string, prWidth int) (string, []string) {
 	const colBranch, colPR, colSubject, colShortPath = 0, 2, 3, 6
-	titles := []string{"BRANCH", "WT", "PR", "LAST COMMIT", "", "PATH", "PATH"}
+	titles := []string{"BRANCH", "", "PR", "LAST COMMIT", "", "PATH", "PATH"}
 	cells := make([][]string, len(rows))
 	for i, r := range rows {
 		pr := prCell(r.pr)
@@ -1729,15 +1729,20 @@ type tableLayout struct {
 // then left out.
 func layoutFirstFit(titles []string, cells [][]string, maxWidth int, floors map[int]int, ways []tableLayout) (header string, lines []string) {
 	for _, w := range ways {
-		at := make(map[int]int, len(w.cols)) // a column's place in this way
-		shownTitles := make([]string, len(w.cols))
-		for j, c := range w.cols {
+		// An untitled column with nothing in it, such as the changes of clean
+		// worktrees, takes no room.
+		cols := slices.DeleteFunc(slices.Clone(w.cols), func(c int) bool {
+			return titles[c] == "" && !slices.ContainsFunc(cells, func(cs []string) bool { return cs[c] != "" })
+		})
+		at := make(map[int]int, len(cols)) // a column's place in this way
+		shownTitles := make([]string, len(cols))
+		for j, c := range cols {
 			at[c], shownTitles[j] = j, titles[c]
 		}
 		shown := make([][]string, len(cells))
 		for i, cs := range cells {
-			shown[i] = make([]string, len(w.cols))
-			for j, c := range w.cols {
+			shown[i] = make([]string, len(cols))
+			for j, c := range cols {
 				shown[i][j] = cs[c]
 			}
 		}
@@ -1853,7 +1858,7 @@ func prBehind(path, headOid string) (n int, known bool) {
 }
 
 func statusCell(s status) string {
-	if s.unknown { // not the clean mark: nothing is known about it
+	if s.unknown { // not blank like a clean worktree's: nothing is known about it
 		return grayStyle.Render("unknown")
 	}
 	var parts []string
@@ -1872,10 +1877,7 @@ func statusCell(s status) string {
 	add(s.staged, "+", greenStyle)
 	add(s.modified, "~", yellowStyle)
 	add(s.untracked, "?", grayStyle)
-	if len(parts) == 0 {
-		return grayStyle.Render(iconClean)
-	}
-	return strings.Join(parts, " ")
+	return strings.Join(parts, " ") // blank when clean: a mark would read as "has a worktree"
 }
 
 func prCell(pr *pullRequest) string {
