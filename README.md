@@ -1,172 +1,270 @@
-A GitHub CLI extension to switch between git worktrees and see their state at a glance.
+# gh-wt
 
-## Overview
+A GitHub CLI extension that makes `git worktree` simple, with the state of every worktree and pull request at a glance.
 
-`gh-wt` = `git worktree list` + `cd`
+It doesn't wait for GitHub: the worktrees show up as soon as git has read them, and their pull requests fill in when `gh` answers.
 
-- `gh wt` shows the other worktrees with their status, PR and last commit, and moves you to the one you pick
-- `gh wt <branch|worktree|path>` moves you to that worktree, creating the worktree (and the branch) if needed
-- `gh wt -l` lists all worktrees
-- `gh wt -p` opens an open pull request's branch as a worktree
-- `gh wt -d <target>...` deletes worktrees and their branches
-- `gh wt -m [<target>] <new-name>` renames a worktree's directory and branch together
-
-It only needs `git` and `gh`. Icons use [Nerd Fonts](https://www.nerdfonts.com/), so set a Nerd Font in your terminal.
-
-## Installation
-
-### Prerequisites
-
-- [GitHub CLI](https://cli.github.com/) must be installed and authenticated
-- A [Nerd Font](https://www.nerdfonts.com/) in your terminal
-- macOS or Linux. Windows binaries are published but untested: copying files (`wt.copy*`) calls `cp`, hooks run with `sh`, and the shell function is for zsh, so it needs an environment that has them, such as WSL or Git Bash
-
-### Install as a GitHub CLI extension
-
-```bash
-gh extension install meltin/gh-wt
-```
-
-### Shell integration (zsh)
-
-An extension runs as a child process, so it cannot change your shell's directory. `gh wt` prints the path of the worktree, and a small `gh()` shell function does the `cd`. Add this to your `.zshrc`:
-
-```zsh
-eval "$(gh wt --init zsh)"
-```
-
-Like git-wt's shell integration, the function intercepts every `gh wt` call: when the last line of its output is a directory, it moves there and prints the lines before it. The exit status is passed through, so if a hook fails after creating a worktree you are still moved into it and the status is non-zero. `gh wt -l`, `gh wt --help` and `gh wt --init` run directly, keeping colors and the terminal width. Every other `gh` command runs as usual.
-
-Run `gh wt --init zsh` to read the function. Because it is loaded at shell startup, upgrading gh-wt updates it the next time you open a shell. Put the line after `gh` is on your `PATH`; it replaces any `gh` function defined before it, and works with a `gh` alias and `setopt nounset`.
+[日本語](README.ja.md)
 
 ## Usage
 
-```
-gh wt --help
-
-# Output:
-Switch between git worktrees, creating them as needed.
-
-USAGE
-  gh wt [<branch|worktree|path> [<start-point>]]
-  gh wt -b <branch> <worktree> [<start-point>]
-  gh wt --orphan [-b <branch>] <worktree>
-  gh wt -p [<number>|<url>|<branch>]
-  gh wt -d|-D <branch|worktree|path>...
-  gh wt -m|-M [<branch|worktree|path>] <new-name>
-  gh wt [flags]
-
-FLAGS
-  -l, --list           List worktrees with changes, PR and last commit
-  -p, --pr             Select an open PR, or give one, and open its branch
-  -b, --branch NAME    Create with a branch name different from the directory
-      --orphan         Create on a new branch with no history
-  -d, --delete         Delete worktrees and their branches (safe)
-  -D, --force-delete   Delete even with changes or an unmerged branch
-  -m, --move           Rename a worktree's directory and branch
-  -M, --force-move     Rename over an existing branch, or a locked worktree
-      --init zsh       Print the shell function that cds into the worktree
-  -h, --help           Show help for command
-
-EXAMPLES
-  $ gh wt                  # Select a worktree and print its path
-  $ gh wt feat/x           # Print the path of the worktree for feat/x,
-                           # creating the worktree (and branch) if needed
-  $ gh wt fix/y main       # Create branch fix/y from main in a new worktree
-  $ gh wt -b me/feat feat  # Directory feat, branch me/feat
-  $ gh wt -p               # Select an open PR and open its branch
-  $ gh wt -p 1720          # Open PR #1720's branch (a PR URL works too)
-  $ gh wt -l               # List worktrees
-  $ gh wt -d feat/x        # Delete the worktree and branch feat/x
-  $ gh wt -m feat/y        # Rename the current worktree and branch to feat/y
-
-A name is always a target, so "gh wt list" creates a worktree named list.
-
-gh wt only prints the path. To cd into it, add this to your .zshrc:
-  eval "$(gh wt --init zsh)"
+``` console
+$ gh wt                              # Select a worktree and move to it
+$ gh wt -l                           # List all worktrees
+$ gh wt <branch|worktree|path>       # Switch to worktree (create worktree/branch if needed)
+$ gh wt <branch> <start-point>       # Create worktree with a new branch from <start-point>
+$ gh wt -b <branch> <worktree>       # Create worktree with a different branch name
+$ gh wt --orphan <branch|worktree>   # Create worktree with a new orphan branch
+$ gh wt -p                           # Select an open pull request and open it in a worktree
+$ gh wt -p <number|url|branch>       # Open a pull request in a worktree
+$ gh wt -d <branch|worktree|path>... # Delete worktree and branch (safe)
+$ gh wt -D <branch|worktree|path>... # Force delete worktree and branch
+$ gh wt -m [<old>] <new>             # Rename worktree directory and branch (safe)
+$ gh wt -M [<old>] <new>             # Force rename (overwrite existing branch, allow moving locked worktrees)
 ```
 
-### Columns
+The target can be specified as:
+- **branch**: a git branch name — _eg._ `gh wt feature-branch`
+- **worktree**: a directory name relative to [`wt.basedir`](#wtbasedir) (default `.wt`) — _eg._ `gh wt some-worktree-folder-name`
+- **path**: a filesystem path (absolute or relative to the current working directory) to an existing worktree — _eg._ `gh wt ../sibling`, `gh wt /absolute/path`
 
-| Column      | Content                                                                                   |
-| ----------- | ----------------------------------------------------------------------------------------- |
-| BRANCH      | Branch name (up to 26 cells), or `(detached)`                                             |
-| (changes)   | `↑` ahead / `↓` behind upstream, `!` conflicts, `+` staged, `~` modified, `?` untracked     |
-| PR          | Number and state (open / draft / merged / closed) of the branch's open PR, else its newest |
-| LAST COMMIT | Subject and relative time                                                                 |
-| PATH        | Worktree path, `~` for home                                                               |
+Targets are matched in that order: a branch first, then a directory under `wt.basedir`, then a path.
 
-For a branch with an open PR, `↓` also counts commits pushed to the PR on GitHub that the worktree doesn't have yet, without fetching; `↓N` means there are such commits but they haven't been fetched, so they can't be counted. The changes follow the branch name without a title of their own, show nothing for a clean worktree, and read `unknown` for a worktree whose status can't be read (a locked worktree on a volume that isn't mounted, for one). In the picker, the current worktree is shown grayed out under the header and cannot be selected. When a table is wider than the terminal, the commit subject and BRANCH are shortened, and PATH shows its parent directories cut to their first letter (`~/d/w/r/feat-x`), then is cut at its end down to 20 cells, and is left out when even that doesn't fit; a narrower terminal leaves out the commit's time and then the commit as well.
+> [!NOTE]
+> gh-wt has no subcommands. The first non-flag argument is always a target name, never a command, so `gh wt list` creates a worktree named `list` instead of listing anything. Run `gh wt -l` to list worktrees.
 
-## Creating worktrees
+gh-wt follows [k1LoW/git-wt](https://github.com/k1LoW/git-wt): the same target rules, the same `wt.*` git config keys (except [these](#not-supported-yet)) and the same behaviour for the operations it has, built on `git` and `gh` alone. Where git or gh already does something, gh-wt runs it and shows its output as is.
 
-When no worktree matches, `gh wt <name>` runs `git worktree add` under the base directory: it checks out the local branch `<name>`, or a remote branch of that name with tracking, or creates a new branch from `HEAD`. A name is always a target, so `gh wt list` creates a worktree named `list`.
+### Listing worktrees
 
-A target can be a branch name, a worktree directory name relative to the base directory, or a path to an existing worktree.
+`gh wt` shows the other worktrees and moves you to the one you pick; `gh wt -l` prints the same table for all of them.
 
-`gh wt <name> <start-point>` creates the new branch from `<start-point>` (a branch, tag or commit) instead of `HEAD`, e.g. `gh wt fix/y main` from inside another worktree. A start point that exists only on a remote is used as `<remote>/<start-point>` (with `checkout.defaultRemote` breaking ties between remotes), so the new branch keeps its own name. A start point is refused when the worktree or a local branch named `<name>` already exists.
+![Picking a worktree with gh wt](docs/demo/select.gif)
 
-`gh wt -b <branch> <worktree>` names the directory `<worktree>` and the branch `<branch>`, e.g. `gh wt -b me/feat feat`; either name finds it afterwards. `gh wt --orphan <name>` creates a branch with no history in an empty worktree: no files are copied, hooks still run, and it can't take a start point or an existing local branch. Flags may come before or after the names, as in git-wt; `-b` also takes `--branch=NAME` or `-bNAME`, and `--` ends the flags.
+| Column      | Content                                                                                 |
+| ----------- | --------------------------------------------------------------------------------------- |
+| BRANCH      | Branch name (up to 26 cells), or `(detached)`                                           |
+| (changes)   | `↑` ahead / `↓` behind upstream, `!` conflicts, `+` staged, `~` modified, `?` untracked |
+| PR          | Number and state (open / draft / merged / closed) of the branch's PR, an open one first |
+| LAST COMMIT | Subject and relative time                                                               |
+| PATH        | Worktree path, `~` for home                                                             |
 
-## Opening pull requests
+- The table appears as soon as git has read the worktrees. The PR column shows a spinner until `gh` answers, then fills in without moving the other columns, and you can move or pick in the meantime. Piped, `gh wt -l` waits and prints once.
+- For a branch with an open PR, `↓` also counts commits pushed to the PR that the worktree doesn't have yet, without fetching. `↓N` means there are such commits, but they haven't been fetched, so they can't be counted.
+- The changes follow the branch name without a title of their own, and show nothing for a clean worktree. They read `unknown` for a worktree whose status can't be read (a locked worktree on a volume that isn't mounted, for one).
+- In the picker, the current worktree is shown grayed out under the header and can't be selected.
+- When the table is wider than the terminal, the commit subject and BRANCH are shortened. PATH shows its parent directories cut to their first letter (`~/d/w/r/feat-x`), then is cut at its end down to 20 cells, and is left out when even that doesn't fit. A narrower terminal leaves out the commit's time and then the commit as well.
 
-`gh wt -p` lists the repository's open pull requests and opens the selected one's branch: like `gh wt <branch>`, it moves to the worktree if there is one and creates it otherwise. The current worktree is shown grayed out under the header, with its PR if it has one, and cannot be selected. `gh wt -p <number>` (or `#<number>`, the PR's URL or its branch) opens a PR directly, and brings the current worktree up to date when given its PR.
+Icons use [Nerd Fonts](https://www.nerdfonts.com/), so set a Nerd Font in your terminal.
 
-| Column   | Content                                                                         |
-| -------- | ------------------------------------------------------------------------------- |
-| PR       | Number, green for open and yellow `draft` for drafts                            |
-| TITLE    | PR title, shortened first when the table is wider than the terminal            |
-| BRANCH   | Head branch, followed by its worktree's changes as in `gh wt`                   |
-| AUTHOR   | PR author                                                                       |
-| UPDATED  | When the PR was last updated                                                    |
-| PATH     | Worktree path if it exists (selecting moves there), `~` for home                |
+### Creating worktrees
+
+When no worktree matches, `gh wt <branch>` runs `git worktree add` under `wt.basedir`. It checks out the local branch, or a remote branch of that name with tracking, or creates a new branch from `HEAD`.
+
+Give a start point to create the new branch from somewhere other than `HEAD`:
+
+``` console
+$ gh wt fix/y main
+```
+
+A start point that exists only on a remote is used as `<remote>/<start-point>` (`checkout.defaultRemote` picks between remotes), so the new branch keeps its own name. A start point only applies to a new branch: it is refused when the worktree or the local branch already exists.
+
+Use `-b`/`--branch` to give the branch a different name from the worktree directory:
+
+``` console
+$ gh wt -b user/my-feature my-feature
+```
+
+You can later switch to the worktree by either branch name or directory name:
+
+``` console
+$ gh wt user/my-feature  # switch by branch name
+$ gh wt my-feature       # switch by directory name
+```
+
+Use `--orphan` to create a worktree with a new orphan branch, which has no history and starts from an empty working tree:
+
+``` console
+$ gh wt --orphan gh-pages
+```
+
+- It can be combined with `-b`, but not with a start point, and git refuses it when the local branch already exists.
+- No files are copied into the new worktree, so that it starts clean. Hooks still run.
+
+Flags may come before or after the names. `-b` also takes `--branch=NAME` or `-bNAME`, and `--` ends the flags.
+
+### Opening pull requests
+
+`gh wt -p` lists the repository's open pull requests, including ones from forks, and opens the selected one in a worktree. Like `gh wt <branch>`, it moves to the worktree if there is one and creates it otherwise. The current worktree is shown grayed out under the header, with its PR if it has one, and can't be selected. `gh wt -p <number>` with the current worktree's PR brings that worktree up to date.
+
+![Opening a pull request with gh wt -p](docs/demo/pr.gif)
+
+``` console
+$ gh wt -p          # select from the list
+$ gh wt -p 1720     # or #1720, the PR's URL, or its branch
+```
+
+| Column   | Content                                                                      |
+| -------- | ---------------------------------------------------------------------------- |
+| PR       | Number, green for open and yellow `draft` for drafts                         |
+| TITLE    | PR title, shortened first when the table is wider than the terminal          |
+| BRANCH   | Head branch, followed by its worktree's changes as in `gh wt`                |
+| AUTHOR   | PR author                                                                    |
+| UPDATED  | When the PR was last updated                                                 |
+| PATH     | Worktree path if it exists (selecting moves there), `~` for home             |
 
 PATH is shortened and left out as in the worktree table; a narrower terminal then leaves out UPDATED and AUTHOR, in that order, before TITLE gets shorter than 20 cells.
 
-`gh pr checkout --worktree` does the checkout, so the PR opens just as gh opens it: fetched first (plain `gh wt <branch>` doesn't fetch), tracking the PR's branch, an existing branch fast-forwarded (or refused when it can't be), and PRs from forks included; a URL of another repository's PR fetches that PR, as `gh pr checkout <url>` does. gh-wt picks the path under `wt.basedir` and, for a new worktree, copies files and runs `wt.hook`. A fork's PR whose branch is named like the default branch, or like a local branch that isn't that PR's, opens as `<owner>/<branch>`, so gh doesn't fast-forward your branch to it.
+The checkout is `gh pr checkout --worktree`, so the PR opens just as gh opens it:
 
-## Deleting worktrees
+- The PR is fetched first. Plain `gh wt <branch>` doesn't fetch.
+- The new branch tracks the PR's branch, and an existing branch is fast-forwarded (or refused when it can't be).
+- A fork's branch named like the default branch gets gh's `<owner>/<branch>` name. So does one named like a local branch that isn't that PR's, so gh doesn't fast-forward your branch to it.
+- A URL of another repository's PR fetches that PR, as `gh pr checkout <url>` does.
 
-`gh wt -d <target>...` removes each worktree and then its local branch, like git-wt:
+gh-wt adds only the path under `wt.basedir`, and for a new worktree, the file copies and `wt.hook`.
 
-- A worktree with modified or untracked files is not removed (ignored files such as `node_modules` don't count)
-- A branch that is not fully merged is kept, with a message; the exit status is still 0
-- The default branch (`origin/HEAD`, else `init.defaultBranch`, else `master`) and the branch the main repository's `HEAD` points to are never deleted; their worktrees can be
-- A target with no worktree but a local branch deletes just the branch
-- A worktree whose directory was already removed is cleaned up as well
-- Parent directories left empty under the base directory (e.g. `feat/` after deleting `feat/x`) are removed
-- Targets are matched as a branch first, then a directory under the base directory, then a path
-- Processing stops at the first target that fails
+### Deleting worktrees
 
-`gh wt -D` removes worktrees with changes and deletes unmerged branches. When the current worktree is deleted, the shell function moves you to the main repository.
+When deleting, the same target types apply: `gh wt -d feature-branch`, `gh wt -d .`, `gh wt -d ../sibling`. Several targets can be given at once; processing stops at the first one that fails.
 
-## Renaming worktrees
+`-d` is the safe form and stops short when something would be lost:
 
-`gh wt -m <new-name>` renames the current worktree; `gh wt -m <target> <new-name>` renames another one. The directory moves to `<base directory>/<new-name>` and the branch is renamed to `<new-name>`, like git-wt:
+- If the worktree has modified or untracked files, nothing is deleted. Ignored files such as `node_modules` don't count.
+- If the branch is not fully merged, the worktree is removed but the branch is kept. git explains why and gh-wt still exits `0`, so read the message rather than only the exit code.
 
-- The branch is renamed first, so git refuses invalid or conflicting names (an existing branch, `feat` when renaming to `feat/y`, a branch checked out elsewhere) before anything on disk changes. If the directory then fails to move, the branch is renamed back
-- An existing destination, or a destination inside another worktree, stops the rename
-- The main working tree, a detached worktree and the protected branches (see deleting) can't be renamed
-- Parent directories left empty under the base directory (e.g. `feat/` after renaming `feat/x`) are removed
+`-D` skips both checks and removes the worktree together with its branch.
 
-`gh wt -M` overwrites an existing branch of the new name and moves a locked worktree. When the current worktree is renamed, the shell function moves you to its new path.
+- A target with no worktree but a local branch deletes just the branch (except a protected one, see below).
+- A worktree whose directory was already removed is cleaned up as well.
+- Parent directories left empty under `wt.basedir` (e.g. `feat/` after deleting `feat/x`) are removed.
+- When the current worktree is deleted, the shell integration moves you to the main repository.
 
-### Configuration
+### Renaming worktrees
 
-gh-wt reads the same `git config` keys as [k1LoW/git-wt](https://github.com/k1LoW/git-wt), so an existing git-wt setup keeps working:
+Use `-m` (`-M` to force) to rename a worktree's directory and branch in a single operation. With one argument, the current worktree is renamed; with two, an explicit worktree is renamed:
 
-| Key                | Default | Effect                                                                              |
-| ------------------ | ------- | ----------------------------------------------------------------------------------- |
-| `wt.basedir`       | `.wt`   | Base directory for new worktrees. `{gitroot}` is the repository's directory name; a relative path is under the repository |
-| `wt.copyignored`   | `false` | Copy files ignored by `.gitignore` (e.g. `.env`) from the current worktree         |
-| `wt.copyuntracked` | `false` | Copy untracked files                                                                |
-| `wt.copymodified`  | `false` | Copy tracked files with uncommitted changes                                         |
-| `wt.hook`          | (none)  | Commands run with `sh -c` in the new worktree, in order; repeat the key for more    |
-
-```bash
-git config --global wt.basedir "~/dev/worktrees/{gitroot}"
-git config --global wt.copyignored true
-git config --global --add wt.hook "npm install"
+``` console
+$ gh wt -m new-name                 # rename the current worktree to "new-name"
+$ gh wt -m old-name new-name        # rename worktree "old-name" to "new-name"
 ```
 
-Files are cloned with `cp -c` on macOS (APFS copy-on-write), so large directories such as `node_modules` copy quickly. `wt.copy`, `wt.nocopy`, `wt.symlink` and the other git-wt keys are not supported yet.
+- The directory moves to `<wt.basedir>/<new-name>`.
+- The branch is renamed first, so git refuses invalid or conflicting names before anything on disk changes. If the directory then fails to move, the branch is renamed back.
+- An existing destination, or a destination inside another worktree, stops the rename.
+- `-M` overwrites an existing branch of the new name and moves a locked worktree.
+- Parent directories left empty under `wt.basedir` (e.g. `feat/` after renaming `feat/x`) are removed.
+
+When invoked through the shell integration on the current worktree, the shell function `cd`s to the new path (the same way `-d` returns to the main repository after deleting the current worktree).
+
+> [!NOTE]
+> The default branch and the branch the main repository's `HEAD` points to are protected.
+> - `-d`/`-D` remove their worktrees but keep the branches, and refuse a branch that has no worktree.
+> - `-m`/`-M` refuses to rename them.
+> - The main working tree and detached worktrees can't be renamed either.
+>
+> The default branch is `origin/HEAD`, else `init.defaultBranch`, else `master`.
+
+## Install
+
+You need the [GitHub CLI](https://cli.github.com/), installed and authenticated, and a [Nerd Font](https://www.nerdfonts.com/) in your terminal.
+
+gh-wt is for macOS and Linux. Windows binaries are published but untested: copying files (`wt.copy*`) calls `cp`, hooks run with `sh`, and the shell function is for zsh, so it needs an environment that has them, such as WSL or Git Bash.
+
+``` console
+$ gh extension install meltin/gh-wt
+```
+
+## Shell Integration
+
+An extension runs as a child process, so it can't change your shell's directory. Add the following to your `~/.zshrc` to move into the worktree:
+
+``` zsh
+eval "$(gh wt --init zsh)"
+```
+
+> [!IMPORTANT]
+> The shell integration creates a `gh()` wrapper function to enable automatic directory switching with `gh wt <branch>`. This wrapper intercepts only `gh wt` commands and passes all other gh commands through unchanged. If you have other tools or customizations that also wrap the `gh` command, there may be conflicts.
+
+The `cd` is performed by that wrapper function, so it only exists in a shell that ran the line above. The extension itself always prints the resulting worktree path as the **last line of stdout**, which is what the wrapper reads. git's and gh's own output and [hook](#wthook) output all go to stderr, so scripts, editors and other tools can rely on the last line:
+
+``` console
+$ WT=$(gh wt feature-branch | tail -1)
+$ git -C "$WT" status
+```
+
+- The exit status is passed through. If a hook fails after creating a worktree, you are still moved into it and the status is non-zero.
+- `gh wt -l`, `gh wt -h`/`--help` and `gh wt --init` run directly, keeping colors and the terminal width.
+- Put the line after `gh` is on your `PATH`. It replaces any `gh` function defined before it, and works with a `gh` alias and `setopt nounset`.
+- Upgrading gh-wt updates the function the next time you open a shell. Run `gh wt --init zsh` to read it.
+
+## Configuration
+
+Configuration is done via `git config`, with the same keys as git-wt, so an existing git-wt setup keeps working.
+
+#### `wt.basedir`
+
+Worktree base directory.
+
+``` console
+$ git config wt.basedir "../{gitroot}-worktrees"
+```
+
+Supported template variables:
+- `{gitroot}`: repository root directory name
+
+A relative path is under the repository, and `~` is your home directory.
+
+Default: `.wt`
+
+#### `wt.copyignored`
+
+Copy files ignored by `.gitignore` (e.g., `.env`) to new worktrees.
+
+``` console
+$ git config wt.copyignored true
+```
+
+Default: `false`
+
+#### `wt.copyuntracked`
+
+Copy untracked files (not yet added to git) to new worktrees.
+
+``` console
+$ git config wt.copyuntracked true
+```
+
+Default: `false`
+
+#### `wt.copymodified`
+
+Copy modified files (tracked but with uncommitted changes) to new worktrees.
+
+``` console
+$ git config wt.copymodified true
+```
+
+Default: `false`
+
+> [!NOTE]
+> - Files are copied from the worktree you run gh-wt in. The worktree base directory (`wt.basedir`) is always excluded.
+> - On macOS, files are cloned with `cp -c` (APFS copy-on-write), so large directories such as `node_modules` copy quickly.
+
+#### `wt.hook`
+
+Commands to run after creating a new worktree. Hooks run in the new worktree directory.
+
+``` console
+$ git config --add wt.hook "npm install"
+$ git config --add wt.hook "go generate ./..."
+```
+
+> [!NOTE]
+> - Hooks only run when **creating** a new worktree, not when switching to an existing one.
+> - If a hook fails, the remaining hooks are skipped and `gh wt` exits with an error. The worktree has already been created at that point, so the shell integration still `cd`s into it, and the non-zero exit code stays visible to scripts.
+> - Hooks run through `sh -c`, so a hook whose failure should be tolerated can be written as `git config --add wt.hook "direnv allow || true"`.
+
+#### Not supported yet
+
+`wt.copy`, `wt.nocopy`, `wt.symlink`, `wt.deletehook`, `wt.remover`, `wt.nocd`, `wt.relative` and git-wt's per-invocation flags (`--basedir`, `--copyignored`, ...) are not supported yet ([#3](https://github.com/meltin/gh-wt/issues/3)).
