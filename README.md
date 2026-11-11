@@ -91,12 +91,12 @@ gh wt only prints the path. To cd into it, add this to your .zshrc:
 | Column      | Content                                                                                   |
 | ----------- | ----------------------------------------------------------------------------------------- |
 | BRANCH      | Branch name (up to 26 cells), or `(detached)`                                             |
-| WT          | `↑` ahead / `↓` behind upstream, `!` conflicts, `+` staged, `~` modified, `?` untracked     |
+| (changes)   | `↑` ahead / `↓` behind upstream, `!` conflicts, `+` staged, `~` modified, `?` untracked     |
 | PR          | Number and state (open / draft / merged / closed) of the branch's open PR, else its newest |
 | LAST COMMIT | Subject and relative time                                                                 |
 | PATH        | Worktree path, `~` for home                                                               |
 
-For a branch with an open PR, `↓` also counts commits pushed to the PR on GitHub that the worktree doesn't have yet, without fetching; `↓N` means there are such commits but they haven't been fetched, so they can't be counted. WT is `unknown` for a worktree whose status can't be read (a locked worktree on a volume that isn't mounted, for one). In the picker, the current worktree is shown grayed out under the header and cannot be selected. When a table is wider than the terminal, the commit subject and BRANCH are shortened, and PATH shows its parent directories cut to their first letter (`~/d/w/r/feat-x`), then is cut at its end down to 20 cells, and is left out when even that doesn't fit; a narrower terminal leaves out the commit's time and then the commit as well.
+For a branch with an open PR, `↓` also counts commits pushed to the PR on GitHub that the worktree doesn't have yet, without fetching; `↓N` means there are such commits but they haven't been fetched, so they can't be counted. The changes follow the branch name without a title of their own, show nothing for a clean worktree, and read `unknown` for a worktree whose status can't be read (a locked worktree on a volume that isn't mounted, for one). In the picker, the current worktree is shown grayed out under the header and cannot be selected. When a table is wider than the terminal, the commit subject and BRANCH are shortened, and PATH shows its parent directories cut to their first letter (`~/d/w/r/feat-x`), then is cut at its end down to 20 cells, and is left out when even that doesn't fit; a narrower terminal leaves out the commit's time and then the commit as well.
 
 ## Creating worktrees
 
@@ -114,13 +114,12 @@ A target can be a branch name, a worktree directory name relative to the base di
 
 | Column   | Content                                                                         |
 | -------- | ------------------------------------------------------------------------------- |
-| WT       | The worktree's changes, as in `gh wt`, if it exists (selecting moves there)     |
 | PR       | Number, green for open and yellow `draft` for drafts                            |
 | TITLE    | PR title, shortened first when the table is wider than the terminal            |
-| BRANCH   | Head branch                                                                     |
+| BRANCH   | Head branch, followed by its worktree's changes as in `gh wt`                   |
 | AUTHOR   | PR author                                                                       |
 | UPDATED  | When the PR was last updated                                                    |
-| PATH     | Worktree path if it exists, `~` for home                                        |
+| PATH     | Worktree path if it exists (selecting moves there), `~` for home                |
 
 PATH is shortened and left out as in the worktree table; a narrower terminal then leaves out UPDATED and AUTHOR, in that order, before TITLE gets shorter than 20 cells.
 

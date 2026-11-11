@@ -72,7 +72,7 @@ func TestUnknownStatus(t *testing.T) {
 	if got := ansi.Strip(statusCell(s)); got != "unknown" {
 		t.Errorf("statusCell = %q", got)
 	}
-	if got := ansi.Strip(statusCell(status{})); got != iconClean {
+	if got := ansi.Strip(statusCell(status{})); got != "" {
 		t.Errorf("a clean worktree's cell = %q", got)
 	}
 }
@@ -191,6 +191,9 @@ func TestRenderTableFits(t *testing.T) {
 		subject: "fix(最近見た工事): 一覧の見出しと最初の日付見出しの間隔を詰める",
 	}}
 	header, lines := renderTable(rows, 100, "", 0)
+	if l := ansi.Strip(lines[0]); strings.Index(l, "↑2 ~3") < strings.Index(l, "issue-1783") {
+		t.Errorf("the changes should follow the branch: %q", l)
+	}
 	for _, l := range append(lines, header) {
 		if w := ansi.StringWidth(l) + 2; w > 100 { // +2 for the mark or cursor
 			t.Errorf("width %d > 100: %q", w, ansi.Strip(l))
@@ -216,6 +219,19 @@ func TestRenderTableFits(t *testing.T) {
 	// Without a width to fit, as in a pipe, nothing is left out or shortened.
 	if _, lines = renderTable(rows, 0, "", 0); !strings.Contains(ansi.Strip(lines[0]), rows[0].wt.path) {
 		t.Errorf("the path should be whole without a width: %q", ansi.Strip(lines[0]))
+	}
+}
+
+// An untitled column with nothing in it, as the changes of clean worktrees,
+// leaves no gap.
+func TestEmptyColumnTakesNoRoom(t *testing.T) {
+	initStyles()
+	ways := []tableLayout{{[]int{0, 1, 2}, nil}}
+	if _, lines := layoutFirstFit([]string{"A", "", "B"}, [][]string{{"a", "", "b"}}, 0, nil, ways); lines[0] != "a  b" {
+		t.Errorf("line = %q, want %q", lines[0], "a  b")
+	}
+	if _, lines := layoutFirstFit([]string{"A", "", "B"}, [][]string{{"a", "", "b"}, {"a", "~1", "b"}}, 0, nil, ways); lines[1] != "a  ~1  b" {
+		t.Errorf("line = %q, want %q", lines[1], "a  ~1  b")
 	}
 }
 
@@ -1002,8 +1018,8 @@ func TestCurrentWorktreeIsUnderHeader(t *testing.T) {
 	if len(lines) != 2 || !slices.Equal(current, []bool{false, true}) {
 		t.Fatalf("lines = %q, current = %v", lines, current)
 	}
-	if l := ansi.Strip(lines[1]); !strings.Contains(l, "?1") || !strings.Contains(l, "here") || !strings.Contains(l, tilde(repo)) {
-		t.Errorf("the branch's line should show it, its untracked file and its path: %q", l)
+	if l := ansi.Strip(lines[1]); !strings.Contains(l, "?1") || !strings.Contains(l, "here") || !strings.Contains(l, tilde(repo)) || strings.Index(l, "?1") < strings.Index(l, "here") {
+		t.Errorf("the branch's line should show it, then its untracked file, and its path: %q", l)
 	}
 	description, options := prOptions(header, lines, current)
 	if !strings.Contains(ansi.Strip(description), "here") {
